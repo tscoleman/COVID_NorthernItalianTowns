@@ -2,6 +2,10 @@
 
 Data and code for analyzing COVID-19 excess mortality in northern Italian towns, January - April 2020
 
+Many towns in northern Italy were heavily infected in the first four months of 2020 and all-cause excess mortality for the most-infected towns provides reasonable lower bounds for the Infection Fatality Rate. The code and data here apply a General Linear Mixed Model (fixed and random effects Poisson count model) to estimate both the age- and sex-specific excess mortality and the distribution across towns of the level of 2020 excess mortality. 
+
+The code is in a very preliminary state. 
+
 **Working paper** https://medrxiv.org/cgi/content/short/2020.06.10.20125005v1
 
 **Data** 

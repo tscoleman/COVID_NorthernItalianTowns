@@ -742,20 +742,26 @@ trim_q <- function(x, lb, ub){
 x1 <- xFEtown_town2020_age2020$Estimate.2020
 x1 <- trim_q(xFEtown_town2020_age2020$Estimate.2020,lb=0.01,ub=0.99)
 x1 <- x1 - mean(x1)
+pdf("histFE.pdf")
+hist(x1,
+     breaks=20,
+     xlab = "Estimated Fixed Effect (de-meaned and trimmed at .01 and .99 pctl)",
+     main = "Estimated 2020 Fixed Effect")
+dev.off()
+
 # This instead uses the predicted 2020 excess mortality
 # This would display ACTUAL rather than predicted
 x1 <- xpred_FE_town2020_age2020_excess$rate_total
 x1 <- xpred_FE_town2020_age2020_excess$ratepred_total
 x1 <- trim_q(x1,lb=0.01,ub=0.99)
 
-pdf("histFE.pdf")
+pdf("histExcess.pdf")
 hist(x1,
      breaks=20,
      xlab = "Excess Mortality (trimmed at .01 and .99 pctl)",
      main = "Estimated 2020 Overall Excess Mortlity")
 dev.off()
 
-sd(xFEtown_town2020_age2020$Estimate.2020)
 ```
 
 
@@ -775,7 +781,7 @@ US Population 2019 from https://www.census.gov/data/tables/time-series/demo/pope
 
 ```{r}
 USpop <- xdisplay2019pop[,4:6]
-x1 <- matrix(c(30950230,29620616,60570846,20499219,21949318,42448537,86133585,85028292,171161877,14699579,16783854,31483433,9374711,13200119,22574830,161657324,166582199,328239523),nrow=6,ncol=3,byrow=TRUE)
+x1 <- matrix(c(30950230,29620616,60570846,86133585,85028292,171161877,20499219,21949318,42448537,14699579,16783854,31483433,9374711,13200119,22574830,161657324,166582199,328239523),nrow=6,ncol=3,byrow=TRUE)
 USpop[,] <- x1[,]
 USweights <- USpop / USpop[6,3]
 USexcess99 <- USpop
