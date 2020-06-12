@@ -1,5 +1,5 @@
-# xxx
-Data and code for analyzing COVID-19 excess mortality in northern Italian towns, January - April 2020
+# Data and code for analyzing COVID-19 excess mortality in northern Italian towns, January - April 2020
+
 
 **Working paper** https://medrxiv.org/cgi/content/short/2020.06.10.20125005v1
 
