@@ -1,0 +1,809 @@
+---
+title: "Regressions & Results for Estimating COVID IFR from data on selected Italian cities"
+author: '[Thomas Coleman](http://www.hilerun.org/econ)'
+date: '`r format(Sys.Date(), "%d %b %Y")`'
+output:
+  html_notebook
+---
+'  pdf_document 
+'  html_notebook:
+'    code_folding: hide
+'  beamer_presentation:
+'    keep_tex: true
+' note the tabs in the "output ..." above - they are necessary or knitr won't work 
+' click the "Run all" button then "Knit" button to produce pdf and Beamer .pdf and .tex
+
+## Introduction
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing a code chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+This .Rmd is the master script / workbook that
+
+* Reads data using "ItalyTown_readdata.Rmd"
+* Reads functions using "ItalyTown_functions.Rmd"
+* Runs regressions and displays results (this workbook)
+
+
+Ago proposed the idea of estimating lower bounds for IFR by looking at (excess) deaths for cities in Northern Italy that likely had close to maixmal infection rates. Two examples:
+
+* Nembro, 147 extra deaths, population 11,526, excess mortality 1.275 percent 
+* Alzano Lombardo, 102 extra deaths, population 13,655, excess mortality 0.75 percent
+
+
+This can be generalized across all towns by running a Poisson count regression, General Linear Mixed Model:
+
+* age-sex fixed effects, for pre-2020 and 2020 (COVID)
+* town random effects, one for pre-2020 and another for 2020
+
+NB: some code chunks below have been "hidden" by setting "include=FALSE" in the r-header. To make them visible (in the original .Rmd) simply replace "include=FALSE" with "include=FALSE"
+
+
+
+
+```{r initialize, include=FALSE}
+rm(list=ls())    # starts a fresh workspace
+library(knitr)
+library("MASS")           ## For nb model. Needs to be before "dplyr" because overwrite "select"
+library("lme4")           ## For random effects Poisson & Negative Binomial
+library("dplyr")          ## load For doing data manipulation, such as group_by and sum. The "select" function gets 
+                          # masked so call by dplyr::select
+require("openxlsx")
+
+
+options(max.print = 300)
+options(max.print = 100)
+
+options(scipen=5)
+
+
+```
+
+
+#### Read Data
+
+The counts (deaths) and population are separate and must be joined. Count data are day-by-day and so must be summed (separately for each year). Also, the data start out "wide" in the sense that males & females, and different years, are all in the same rows. This must be converted to "long" with each row being a separate observation (one cell of the year x town x age-sex group)
+
+```{r readdata, include=FALSE}
+
+# Converts the .Rmd to straight .r and then "source"s
+
+# All the functions used
+knit('ItalyTown_functions.Rmd', tangle=TRUE)
+source('ItalyTown_functions.R') 
+
+# Read data
+knit('ItalyTown_readdata.Rmd', tangle=TRUE)
+source('ItalyTown_readdata.R') 
+
+
+
+```
+
+The important data to come out is "count_long1_subset" which is a subset of all the data, subsetted on the four provinces of Milano, Bergamo, Brescia, Lodi. 
+
+```{r basicstats}
+# Some basic stats on the data
+# Median number of people in cell in 2020
+
+summary(unlist(count_long1_subset[count_long1_subset$year == 2020,"pop"]))
+# Number of deaths and population (for towns reporting 2020 deaths) for 2020
+colSums(count_long1_subset[count_long1_subset$year == "2020",c("count","pop")]) 
+# Total 2020 population for the region (divided by 2 because there are the sub-groups and the total)
+(sum(popdata2020$Totale.Maschi) + sum(popdata2020$Totale.Femmine))/2
+
+```
+
+
+## Run Poisson Count Regressions
+
+
+#### Poisson FE nested models
+
+This is Poisson town & town x treatment FE, run here with indicators rather than default factors. I do this to make sure I've got the indicators right for RE, but also because the display (summary) works better, putting the indicators we care about at the front and all the FEs lower down.
+
+FE models nested: 
+
+* poisFE_town_age: town FE and age FE but no interaction with 2020
+* poisFE_town2020_age: town & town x 2020 FE and age FE (no age interaction with 2020)
+* poisFE_town2020_age2020: town FE and age FE both with interaction with 2020
+
+
+
+```{r estimateFEsub, include=FALSE, eval=FALSE}   
+# conditional 
+# Poissons with "by-hand" indicator variables - these give the same answer (for FE)
+# as using, e.g., NOME_COMUNE*COVID2020. But the order of variables is different
+# so that the variables we want to see (e.g. CLASS_DI_ETTA_2020_sex) show up first
+# in the list, rather than all the FE NOME_COMUNE
+
+#poisFE <- glm(count ~ CLASSE_DI_ETA*COVID2020*sex + NOME_COMUNE*COVID2020 
+#	+ offset(log(pop)), family=poisson, data=count_long1_subset) 
+poisFE_town_age <- glm(count ~ CLASSE_DI_ETA_sex + NOME_COMUNE 
+	+ offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+poisFE_town2020_age <- glm(count ~ CLASSE_DI_ETA_sex + NOME_COMUNE + NOME_COMUNE_2020 +
+	+ offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+poisFE_town_age2020 <- glm(count ~ CLASSE_DI_ETA_sex + CLASSE_DI_ETA_sex_2020 + NOME_COMUNE +
+	+ offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+# 2020 age effects but not interacted with sex, to use for LLR test of sex differences in excess mortality
+poisFE_town2020_age2020nosex <- glm(count ~ CLASSE_DI_ETA_sex + CLASSE_DI_ETA_2020 + sex_2020 + NOME_COMUNE + NOME_COMUNE_2020 +
+	+ offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+# First, the Poisson from above with standard R factors, to check my indicators are OK
+summary(poisFE_town_age)
+summary(poisFE_town2020_age)
+#summary(poisFE)        # should match the poisFE_town2020_age2020
+summary(poisFE_town_age2020)
+summary(poisFE_town2020_age2020nosex)
+
+
+
+```
+
+```{r estimateFEfull}
+
+# Different parmetrizations of FE factors:
+#    - the age categories inteacted with 2020 (CLASSE_DI_ETA_sex_2020) are created so that "pre-2020" is excluded 
+#      the pre-2020 is labeled "0-0Before" which will sort before "0-14 anni"
+#    - the Town interacted with 2020 factor has the pre-2020 excluded: the pre-2020 is labeled "aaBefore"
+#      which will sort before the first town and thus be excluded
+# 1) Including age factors (CLASSE_DI_ETA) first, Town (NOME_COMUNE) 2nd (labeled "poisFE_town2020_age2020")
+#   RESULT: a) the town 2020 FEs are measured relative to pre-2020
+#              - Almost all estimated FEs are larger than zero
+#              - Most FEs have z-values large
+#           b) the age 2020 FEs are measured relative to ?? and the SEs are large
+#              - I think measured relative to mean(town-2020-FE), 
+#              - the (FE - mean(townFE)) is roughly same as estiamted FE from RE model
+# 2) Including age factors (CLASSE_DI_ETA) second, Town (NOME_COMUNE) first (labeled "poisFE_town2020_age2020_NOMfirst")
+#   RESULT: a) the town 2020 FEs are measured relative to ??
+#              - The same as above just mean shifted down
+#              - The SEs are not very different but of course the z-values are now small
+#           b) the age 2020 FEs are measured relative to ?? and the SEs are small
+#              - Now both "pre-2020" and "M75+" are excluded 
+#                 - I think the "pre-2020" is soaked up by the town-2020 effect and so *2* factors have to be excluded ??
+#              - I think measured relative to mean(town-2020-FE), 
+#              - the (FE - mean(townFE)) is roughly same as estiamted FE from RE model
+
+
+# Entereing in this order (NOME_COMUNE last) does not make the 2020 factor excluded so not all town factors are estimated relative to "Before"
+#xxpoisFE_town2020_age2020 <- glm(count ~ CLASSE_DI_ETA_sex + CLASSE_DI_ETA_sex_2020  
+#  + NOME_COMUNE + NOME_COMUNE_2020 +
+#    + offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+# Entereing in this order (NOME_COMUNE first) forces the 2020 factor to be excluded so all town factors are estimated relative to "Before"
+poisFE_town2020_age2020 <- glm(count ~ NOME_COMUNE + NOME_COMUNE_2020 + CLASSE_DI_ETA_sex + CLASSE_DI_ETA_sex_2020  
+    + offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+#summary(xxpoisFE_town2020_age2020)
+summary(poisFE_town2020_age2020)
+```
+
+```{r,include=FALSE,eval=FALSE}
+# Just double-check that same answer when interact
+#xpoisFE_town2020_age2020 <- glm(count ~ COVID2020*CLASSE_DI_ETA_sex 
+#  + NOME_COMUNE*COVID2020 
+#    + offset(log(pop)), family=poisson, data=count_long1_subset) 
+
+#summary(xpoisFE_town2020_age2020)
+```
+
+
+
+```{r,include=FALSE}
+
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+#wb <- loadWorkbook(file="results1_55.xlsx")
+#writeData(wb,	sheet="FEresults",	x=summary(poisFE_town2020_age2020)$coefficients,	startRow=3,startCol=3)
+#saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+```
+
+
+Note the following: 
+
+* Residual deviance is low enough that we have some confidence the Poisson models works (no overdispersion)
+* Age x 2020 effects here are significant, but not in RE below
+  + I think because here the average FE is negative and the 
+  + Age x 2020 effects are calculated _relative_ to FEs and so are large
+  + For RE below the "average RE" is zero so the Age x 2020 effect is smaller
+  + For RE below the Age x 2020 effect for the 2sigma percentile town should be significant. 
+  + How to formalize this?
+
+Now some testing to compare nested models:
+
+```{r testFEsummary, include=FALSE, eval=FALSE}
+
+testFEsummary <- as.data.frame(matrix(0,nrow=7,ncol=7))
+rownames(testFEsummary) <- c("poisFE_town_age","addtown2020(poisFE_town2020_age)","addage2020(poisFE_town2020_age2020)","poisFE_town_age2020","addtown2020","poisFE_town2020_age202nosex","addsex2020")
+colnames(testFEsummary) <- c("logLik","dfLL","LRtest","p-value","dfLRtest","AIC","pseudoRsq")
+
+x1 <- logLik(poisFE_town_age)
+testFEsummary[1,"logLik"] <- x1[1]
+testFEsummary[1,"dfLL"] <- attr(x1,"df")
+testFEsummary[1,"AIC"] <- AIC(poisFE_town_age)
+testFEsummary[1,"pseudoRsq"] <- 1 - (poisFE_town_age$deviance/poisFE_town_age$null.deviance)
+x1 <- logLik(poisFE_town2020_age)
+testFEsummary[2,"logLik"] <- x1[1]
+testFEsummary[2,"dfLL"] <- attr(x1,"df")
+testFEsummary[2,"AIC"] <- AIC(poisFE_town2020_age)
+testFEsummary[2,"pseudoRsq"] <- 1 - (poisFE_town2020_age$deviance/poisFE_town2020_age$null.deviance)
+x1 <- logLik(poisFE_town2020_age2020)
+testFEsummary[3,"logLik"] <- x1[1]
+testFEsummary[3,"dfLL"] <- attr(x1,"df")
+testFEsummary[3,"AIC"] <- AIC(poisFE_town2020_age2020)
+testFEsummary[3,"pseudoRsq"] <- 1 - (poisFE_town2020_age2020$deviance/poisFE_town2020_age2020$null.deviance)
+x1 <- logLik(poisFE_town_age2020)
+testFEsummary[4,"logLik"] <- x1[1]
+testFEsummary[4,"dfLL"] <- attr(x1,"df")
+testFEsummary[4,"AIC"] <- AIC(poisFE_town_age2020)
+testFEsummary[4,"pseudoRsq"] <- 1 - (poisFE_town_age2020$deviance/poisFE_town_age2020$null.deviance)
+# The likelihood, etc, for the "addsex2020" is as for "poisFE_town2020_age2020"
+testFEsummary[5,] <- testFEsummary[3,]
+
+# To test for sex effects in 2020 excess mortality
+x1 <- logLik(poisFE_town2020_age2020nosex)
+testFEsummary[6,"logLik"] <- x1[1]
+testFEsummary[6,"dfLL"] <- attr(x1,"df")
+testFEsummary[6,"AIC"] <- AIC(poisFE_town2020_age2020nosex)
+testFEsummary[6,"pseudoRsq"] <- 1 - (poisFE_town2020_age2020nosex$deviance/poisFE_town2020_age2020nosex$null.deviance)
+# The likelihood, etc, for the "addsex2020" is as for "poisFE_town2020_age2020"
+testFEsummary[7,] <- testFEsummary[3,]
+
+# LR ratio tests for nested town&age -> town2020&age -> town2020&age2020
+testFEsummary[2:3,"LRtest"] <- -2*(testFEsummary[1:2,"logLik"] - testFEsummary[2:3,"logLik"])
+testFEsummary[2:3,"dfLRtest"] <- (testFEsummary[2:3,"dfLL"] - testFEsummary[1:2,"dfLL"])
+testFEsummary[2:3,"p-value"] <- pchisq(q=testFEsummary[2:3,"LRtest"],df=testFEsummary[2:3,"dfLRtest"],lower.tail=FALSE)
+# LR ratio tests for nested town&age -> town&age2020 -> town2020&age2020
+testFEsummary[4:5,"LRtest"] <- -2*(testFEsummary[c(1,4),"logLik"] - testFEsummary[4:5,"logLik"])
+testFEsummary[4:5,"dfLRtest"] <- (testFEsummary[4:5,"dfLL"] - testFEsummary[c(1,4),"dfLL"])
+testFEsummary[4:5,"p-value"] <- pchisq(q=testFEsummary[4:5,"LRtest"],df=testFEsummary[4:5,"dfLRtest"],lower.tail=FALSE)
+# LR ratio tests for nested town&age -> town2020&age2020nosex -> town2020&age2020
+testFEsummary[6:7,"LRtest"] <- -2*(testFEsummary[c(1,6),"logLik"] - testFEsummary[6:7,"logLik"])
+testFEsummary[6:7,"dfLRtest"] <- (testFEsummary[6:7,"dfLL"] - testFEsummary[c(1,6),"dfLL"])
+testFEsummary[6:7,"p-value"] <- pchisq(q=testFEsummary[6:7,"LRtest"],df=testFEsummary[6:7,"dfLRtest"],lower.tail=FALSE)
+
+# To write a table to Excel
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+# Summary test statistics table
+writeData(wb,	sheet="FEresults",	x=testFEsummary,	startRow=3,startCol=9)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+testFEsummary
+```
+
+
+Here is negative binomial estimation, but commented out because
+
+* Poisson works so don't need NB
+* It takes forever to run
+
+```{r, include=FALSE}
+#Here is negative binomial estimation, but commented out because
+#* Poisson works so don't need NB
+#* It takes forever to run
+#xnbFR_town_2020 <- glm.nb(count ~ CLASSE_DI_ETA + CLASSE_DI_ETA_2020 + sex + sex_2020 
+#  + NOME_COMUNE + NOME_COMUNE_2020 +
+#	+ offset(log(pop)), data=count_long1_subset)
+
+#summary(xnbFR_town_2020)
+```
+
+#### Try Random Effects Estimators
+
+Make the pre-2020 town effects fixed rather than random effects, so only the 2020 town effect is RE
+
+RE models nested: 
+
+* poisRE_town_age: town RE and age FE but no interaction with 2020 - same as poisFE_town_age
+* poisRE_town2020_age: town FE & town x 2020 RE and age FE (no age interaction with 2020)
+* poisRE_town2020_age2020: town RE and age FE both with interaction with 2020
+
+
+```{r estimateREsub, include=FALSE, eval=FALSE}
+# conditional
+
+# This is Poisson town & age RE but no interaction with 2020
+poisRE_town_age <- glmer(count ~ 1 + CLASSE_DI_ETA_sex  + (1 | NOME_COMUNE) 
+	+ offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+# I was thinking of using FE for pre-2020 town effect and RE for 2020 effect, but the estimation does not really work
+# (keeps running)
+#poisRE_town_age <- poisFE_town_age        # make it same as FE model
+
+# https://stats.stackexchange.com/questions/164457/r-glmer-warnings-model-fails-to-converge-model-is-nearly-unidentifiable
+# https://rstudio-pubs-static.s3.amazonaws.com/33653_57fc7b8e5d484c909b615d8633c01d51.html
+
+
+# This is Poisson town & town x 2020COVID RE with age but not age x 2020 FE
+poisRE_town2020_age <- glmer(count ~ 1 + CLASSE_DI_ETA_sex  + (1 + COVID2020| NOME_COMUNE)
+	+ offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+# Use the "by hand" indicators for demographic FE because I want "pre 2020" to be the excluded category
+# but the deault for R is to make F 0-14 the excluded. (It has to do with sorting by name, and I have set
+# the name in my "by-hand" indicator so that "pre-2020" sorts either first or last, so it is excluded)
+# This is Poisson town RE with age & age x 2020 FE
+poisRE_town_age2020 <- glmer(count ~ 1 + CLASSE_DI_ETA_sex*COVID2020  + (1 | NOME_COMUNE) 
+	+ offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+# Poisson town RE with age & age x 2020 FE but no sex interaction for 2020
+poisRE_town2020_age2020nosex <- glmer(count ~ 1 + CLASSE_DI_ETA_sex + CLASSE_DI_ETA_2020 + sex + 
+	+ (1 + COVID2020| NOME_COMUNE) + offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+#poisRE_town_age2020 <- poisFE_town_age2020    # make it same as FE model
+
+
+
+# https://stats.stackexchange.com/questions/164457/r-glmer-warnings-model-fails-to-converge-model-is-nearly-unidentifiable
+# https://rstudio-pubs-static.s3.amazonaws.com/33653_57fc7b8e5d484c909b615d8633c01d51.html
+
+summary(poisRE_town_age)
+summary(poisRE_town2020_age)
+summary(poisRE_town_age2020)
+summary(poisRE_town2020_age2020nosex)
+
+
+```
+
+
+```{r estimateREfull}
+#  {r, include=FALSE, eval=FALSE}
+# Puzzle with R estimation and changing factor parametrization
+# Use the "by hand" indicators for demographic FE because I want "pre 2020" to be the excluded category
+# but the default for R is to make F 0-14 the excluded. (It has to do with sorting by name, and I have set
+# the name in my "by-hand" indicator so that "pre-2020" sorts either first or last, so it is excluded)
+# This estimation is the same as below (the standard R crossing of factors) except has some SEs roughly 10x smaller
+#  - log likelihood same
+#  - coefficients on 2020 x demographics differ by value of excluded category
+#  - but the SEs are dramatically smaller
+# Seems to be because correlation across FEs are zero here, and large when "F0-14" is the excluded factor?
+# Poisson town & town x 2020COVID RE with age and age x 2020 FE
+poisRE_town2020_age2020 <- glmer(count ~ 1 + CLASSE_DI_ETA_sex + CLASSE_DI_ETA_sex_2020 + (1 + COVID2020| NOME_COMUNE)
+	+ offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+summary(poisRE_town2020_age2020)
+
+```
+
+
+```{r writeREcoeff,include=FALSE}
+
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$coefficients,	startRow=3,startCol=3)
+writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$varcor,	startRow=27,startCol=1)
+writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$devcomp$dims[1],	startRow=31,startCol=3)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+```
+
+```{r,include=FALSE,eval=FALSE}
+# Use the standard R factors
+# Poisson town & town x 2020COVID RE with age and age x 2020 FE
+# Here the 2020 age-specific FEs are estimated relative to F0-14 and the SEs are much larger
+#xpoisRE_town2020_age2020 <- glmer(count ~ 1 + CLASSE_DI_ETA_sex*COVID2020  + (1 + COVID2020| NOME_COMUNE)
+#	+ offset(log(pop)), family=poisson(link = "log"), data=count_long1_subset,
+#  glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))) 
+
+#summary(xpoisRE_town2020_age2020)
+
+```
+
+
+
+
+
+Now some testing to compare nested models:
+
+
+
+
+```{r testREsummary, include=FALSE, eval=FALSE}
+
+testREsummary <- as.data.frame(matrix(0,nrow=7,ncol=7))
+rownames(testREsummary) <- c("poisRE_town_age","addtown2020(poisRE_town2020_age)","addage2020(poisRE_town2020_age2020)","poisRE_town_age2020","addtown2020","poisRE_town2020_age202nosex","addsex2020")
+colnames(testREsummary) <- c("logLik","dfLL","LRtest","p-value","dfLRtest","AIC","pseudoRsq")
+
+x1 <- logLik(poisRE_town_age)
+testREsummary[1,"logLik"] <- x1[1]
+testREsummary[1,"dfLL"] <- attr(x1,"df")
+testREsummary[1,"AIC"] <- AIC(poisRE_town_age)
+#testREsummary[1,"pseudoRsq"] <- 1 - (poisRE_town_age$deviance/poisRE_town_age$null.deviance)
+x1 <- logLik(poisRE_town2020_age)
+testREsummary[2,"logLik"] <- x1[1]
+testREsummary[2,"dfLL"] <- attr(x1,"df")
+testREsummary[2,"AIC"] <- AIC(poisRE_town2020_age)
+#testREsummary[2,"pseudoRsq"] <- 1 - (poisRE_town2020_age$deviance/poisRE_town2020_age$null.deviance)
+x1 <- logLik(poisRE_town2020_age2020)
+testREsummary[3,"logLik"] <- x1[1]
+testREsummary[3,"dfLL"] <- attr(x1,"df")
+testREsummary[3,"AIC"] <- AIC(poisRE_town2020_age2020)
+#testREsummary[3,"pseudoRsq"] <- 1 - (poisRE_town2020_age2020$deviance/poisRE_town2020_age2020$null.deviance)
+x1 <- logLik(poisRE_town_age2020)
+testREsummary[4,"logLik"] <- x1[1]
+testREsummary[4,"dfLL"] <- attr(x1,"df")
+testREsummary[4,"AIC"] <- AIC(poisRE_town_age2020)
+#testREsummary[4,"pseudoRsq"] <- 1 - (poisRE_town_age2020$deviance/poisRE_town_age2020$null.deviance)
+# The likelihood, etc, for the "addsex2020" is as for "poisRE_town2020_age2020"
+testREsummary[5,] <- testREsummary[3,]
+
+# To test for sex efREcts in 2020 excess mortality
+x1 <- logLik(poisRE_town2020_age2020nosex)
+testREsummary[6,"logLik"] <- x1[1]
+testREsummary[6,"dfLL"] <- attr(x1,"df")
+testREsummary[6,"AIC"] <- AIC(poisRE_town2020_age2020nosex)
+#testREsummary[6,"pseudoRsq"] <- 1 - (poisRE_town2020_age2020nosex$deviance/poisRE_town2020_age2020nosex$null.deviance)
+# The likelihood, etc, for the "addsex2020" is as for "poisRE_town2020_age2020"
+testREsummary[7,] <- testREsummary[3,]
+
+# LR ratio tests for nested town&age -> town2020&age -> town2020&age2020
+testREsummary[2:3,"LRtest"] <- -2*(testREsummary[1:2,"logLik"] - testREsummary[2:3,"logLik"])
+testREsummary[2:3,"dfLRtest"] <- (testREsummary[2:3,"dfLL"] - testREsummary[1:2,"dfLL"])
+testREsummary[2:3,"p-value"] <- pchisq(q=testREsummary[2:3,"LRtest"],df=testREsummary[2:3,"dfLRtest"],lower.tail=FALSE)
+# LR ratio tests for nested town&age -> town&age2020 -> town2020&age2020
+testREsummary[4:5,"LRtest"] <- -2*(testREsummary[c(1,4),"logLik"] - testREsummary[4:5,"logLik"])
+testREsummary[4:5,"dfLRtest"] <- (testREsummary[4:5,"dfLL"] - testREsummary[c(1,4),"dfLL"])
+testREsummary[4:5,"p-value"] <- pchisq(q=testREsummary[4:5,"LRtest"],df=testREsummary[4:5,"dfLRtest"],lower.tail=FALSE)
+# LR ratio tests for nested town&age -> town2020&age2020nosex -> town2020&age2020
+testREsummary[6:7,"LRtest"] <- -2*(testREsummary[c(1,6),"logLik"] - testREsummary[6:7,"logLik"])
+testREsummary[6:7,"dfLRtest"] <- (testREsummary[6:7,"dfLL"] - testREsummary[c(1,6),"dfLL"])
+testREsummary[6:7,"p-value"] <- pchisq(q=testREsummary[6:7,"LRtest"],df=testREsummary[6:7,"dfLRtest"],lower.tail=FALSE)
+
+# To write a table to Excel
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+# Summary test statistics table
+writeData(wb,	sheet="REresults",	x=testREsummary,	startRow=3,startCol=9)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+testREsummary
+```
+
+
+## Results for RE and FE Models
+
+#### Summary for RE Model
+
+
+
+
+Then call the function and print the Excess Mortality
+
+* 2020 Predicted Mortality Rates (mid and 2.5sigma of the town distribution)
+* 2020 Predicted Excess Mortality Rates (mid and 2.5sigma of the town distribution)
+```{r displaytail}
+
+xx1 <- create_REsummaryData(count_long1_subset,popdata2019,popdata2020,nsigma=2.5)
+xdisplay2019pop <- as.matrix(as.data.frame(xx1[2]))
+xdisplay2020pop <- as.matrix(as.data.frame(xx1[3]))
+xnames <- unlist(xx1[4])
+xtestdata <- as.data.frame(xx1[1])
+#xx3 <- create_REsummaryAll(xtestdata,poisRE_town2020_age2020,nsigma=2.5,xdisplay2019pop,xdisplay2020pop) 
+
+
+#xdisplay_RE_town2020_age <- create_REsummary(count_long1_subset,popdata2019,popdata2020,poisRE_town2020_age,sigma=2.5)
+#xdisplay_RE_town2020_age2020 <- create_REsummaryALL(count_long1_subset,popdata2019,popdata2020,poisRE_town2020_age2020,sigma=2.5)
+xdisplay_RE_town2020_age2020 <- create_REsummaryAll(xtestdata,poisRE_town2020_age2020,nsigma=2.5,xdisplay2019pop,xdisplay2020pop) 
+
+kable(xdisplay_RE_town2020_age2020[3], digits=5, caption = "Rates 2019 Summary, Yes Age Interaction",format='pandoc')
+kable(xdisplay_RE_town2020_age2020[2], digits=5, caption = "Rates 2020 Summary, Yes Age Interaction",format='pandoc')
+#kable(xdisplay_RE_town2020_age[1], digits=5, caption = "Excess Rates Summary, No Age Interaction",format='pandoc')
+kable(xdisplay_RE_town2020_age2020[1], digits=5, caption = "Excess Rates Summary, Yes Age Interaction",format='pandoc')
+
+#xdisplay_RE_town2020_age2020[2]
+xdisplay_RE_town2020_age2020[1]
+
+```
+
+```{r writesummary,include=FALSE}
+
+# Write out the summary data and population weights
+
+# To write a table to Excel
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+# Excess mortality for 2020, mid and 2.5 sigma
+writeData(wb,	sheet="summary",	x=xdisplay_RE_town2020_age2020[1],	startRow=3,startCol=3)
+x1 <- as.data.frame(xdisplay2020pop) / as.data.frame(xdisplay2020pop)[6,6]
+writeData(wb,	sheet="summary",	x=x1,	startRow=27,startCol=2)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+```
+
+
+```{r summaryLRtest,include=FALSE,eval=FALSE}
+# Create summary table for LLR tests, etc
+xsumtable1 <- as.data.frame(matrix(0,nrow=4,ncol=8))
+rownames(xsumtable1) <- c("No2020","Town2020","Town+demog2020","ResidDeviance")
+colnames(xsumtable1) <- c("RE_LLR_value","RE_LLR_df","RE_LLR_prob","RE_AIC","FE_LLR_value","FE_LLR_df","FE_LLR_prob","FE_AIC")
+
+# RE LLRatio and AIC
+xsumtable1["No2020","RE_AIC"] <- testREsummary[1,"AIC"]
+xsumtable1["Town2020","RE_AIC"] <- testREsummary[2,"AIC"]
+xsumtable1["Town2020","RE_LLR_value"] <- testREsummary[2,"LRtest"]
+xsumtable1["Town2020","RE_LLR_df"] <- testREsummary[2,"dfLRtest"]
+xsumtable1["Town2020","RE_LLR_prob"] <- testREsummary[2,"p-value"]
+xsumtable1["Town+demog2020","RE_AIC"] <- testREsummary[3,"AIC"]
+xsumtable1["Town+demog2020","RE_LLR_value"] <- testREsummary[3,"LRtest"]
+xsumtable1["Town+demog2020","RE_LLR_df"] <- testREsummary[3,"dfLRtest"]
+xsumtable1["Town+demog2020","RE_LLR_prob"] <- testREsummary[3,"p-value"]
+# FE
+xsumtable1["No2020","FE_AIC"] <- testFEsummary[1,"AIC"]
+xsumtable1["Town2020","FE_AIC"] <- testFEsummary[2,"AIC"]
+xsumtable1["Town2020","FE_LLR_value"] <- testFEsummary[2,"LRtest"]
+xsumtable1["Town2020","FE_LLR_df"] <- testFEsummary[2,"dfLRtest"]
+xsumtable1["Town2020","FE_LLR_prob"] <- testFEsummary[2,"p-value"]
+xsumtable1["Town+demog2020","FE_AIC"] <- testFEsummary[3,"AIC"]
+xsumtable1["Town+demog2020","FE_LLR_value"] <- testFEsummary[3,"LRtest"]
+xsumtable1["Town+demog2020","FE_LLR_df"] <- testFEsummary[3,"dfLRtest"]
+xsumtable1["Town+demog2020","FE_LLR_prob"] <- testFEsummary[3,"p-value"]
+xsumtable1["ResidDeviance","FE_LLR_value"] <- summary(poisFE_town2020_age2020)$deviance
+xsumtable1["ResidDeviance","FE_LLR_df"] <- summary(poisFE_town2020_age2020)$df.residual
+xsumtable1["ResidDeviance","FE_LLR_prob"] <- ppois(summary(poisFE_town2020_age2020)$deviance,summary(poisFE_town2020_age2020)$df.resid,lower.tail=FALSE)
+
+x1 <- overdisp_fun(poisRE_town2020_age2020)
+xsumtable1["ResidDeviance",c("RE_LLR_value","RE_LLR_df","RE_LLR_prob")] <- x1[c(1,3,4)]
+
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+# Summary for regressions
+writeData(wb,	sheet="summary",	x=xsumtable1,	startRow=11,startCol=2)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+```
+
+
+
+#### Estimated Parameters and Prediction from FE Estimator
+
+
+
+Extract 2020 x town FEs and create predictions
+```{r extractFE, include=FALSE}
+
+# Use the FE regression that puts NOM_COMUNE first, so that tests for town 2020 FE are versus pre-2020 (excluded category)
+#xFEtown_town2020_age2020_NOMfirst <- extract_FE(poisFE_town2020_age2020_NOMfirst,name_2020="NOME_COMUNE_2020",name_before="NOME_COMUNE")
+xFEtown_town2020_age2020 <- extract_FE(poisFE_town2020_age2020,name_2020="NOME_COMUNE_2020",name_before="NOME_COMUNE")
+#xFEage_town2020_age2020_NOMfirst <- extract_FE(poisFE_town2020_age2020_NOMfirst,name_2020="CLASSE_DI_ETA_sex_2020",name_before="CLASSE_DI_ETA_sex")
+xFEage_town2020_age2020 <- extract_FE(poisFE_town2020_age2020,name_2020="CLASSE_DI_ETA_sex_2020",name_before="CLASSE_DI_ETA_sex")
+#xxFEtown_town2020_age2020 <- extract_FE(xpoisFE_town2020_age2020,name_2020="COVID2020TRUE:NOME_COMUNE")
+
+xpred_RE_town2020_age2020_list <- create_prediction(count_long1_subset,poisRE_town2020_age2020)
+xpred_FE_town2020_age2020_list <- create_prediction(count_long1_subset,poisFE_town2020_age2020)
+
+# As a reminder, the function "creat_prediction" produces a list with these items:
+#  - Town-by-town "wide" datasets with all variables (counts, rates, predicted & actual for ages 0-14, 15-64, ...)
+#     1 xpred_wide_2019,
+#     2 xpred_wide_2020,
+#     3 xpred_wide_excess,
+#  - Summary tables, 5x3, with ages down rows and M/F/Total across columns
+#     4 xsumratesact_2019,
+#     5 xsumratesact_2020,
+#     6 xsumratesact_excess,
+#     7 xsumratespred_2019,
+#     8 xsumratespred_2020,
+#     9 xsumratespred_excess
+
+# The result of the "create_prediction" is a list rather than df. This coerces back
+xpred_FE_town2020_age2020_excess <- as.data.frame(xpred_FE_town2020_age2020_list[3])
+xpred_RE_town2020_age2020_mort <- as.data.frame(xpred_RE_town2020_age2020_list[2])
+xpred_FE_town2020_age2020_mort <- as.data.frame(xpred_FE_town2020_age2020_list[2])
+xpred_RE_town2020_age2019_mort <- as.data.frame(xpred_RE_town2020_age2020_list[1])
+xpred_FE_town2020_age2019_mort <- as.data.frame(xpred_FE_town2020_age2020_list[1])
+
+xpred_FE_town2020_age2019_sumact2019 <- as.data.frame(xpred_FE_town2020_age2020_list[4])
+xpred_FE_town2020_age2019_sumact2020 <- as.data.frame(xpred_FE_town2020_age2020_list[5])
+xpred_FE_town2020_age2020_sumactexcess <- as.data.frame(xpred_FE_town2020_age2020_list[6])
+
+# Display the counts for Nembro and Alzano Lombardo (used in intro)
+xpred_FE_town2020_age2020_mort[xpred_FE_town2020_age2020_mort$NOME_COMUNE == "Nembro" | xpred_FE_town2020_age2020_mort$NOME_COMUNE == "Alzano Lombardo",c("NOME_COMUNE","count_total","pop_total")]
+
+xpred_FE_town2020_age2019_mort[xpred_FE_town2020_age2019_mort$NOME_COMUNE == "Nembro" | xpred_FE_town2020_age2019_mort$NOME_COMUNE == "Alzano Lombardo",c("NOME_COMUNE","count_total","pop_total")]
+```
+
+Actual: Average 2020 Mortality and (Actual) Excess Mortality
+```{r write25sigma,include=FALSE}
+cbind(xpred_FE_town2020_age2019_sumact2020,xpred_FE_town2020_age2020_sumactexcess)
+
+c(sd(log(xpred_FE_town2020_age2019_mort$rate_total)),sd(log(xpred_FE_town2020_age2020_mort$rate_total)))
+c(sd(xpred_FE_town2020_age2019_mort$rate_total),sd(xpred_FE_town2020_age2020_mort$rate_total),sd(xpred_FE_town2020_age2020_excess$rate_total))
+c(sd(xpred_FE_town2020_age2019_mort$ratepred_total),sd(xpred_FE_town2020_age2020_mort$ratepred_total),sd(xpred_FE_town2020_age2020_excess$ratepred_total))
+
+xnames <- c("pop_total","rate2019","rate2020","excess_act","excess_pred","excess.M.15.54.anni","excesspred.M.15.54.anni")
+x6 <- cbind(xpred_FE_town2020_age2020_mort[,c("pop_total")],xpred_FE_town2020_age2019_mort[,c("rate_total")],xpred_FE_town2020_age2020_mort[,c("rate_total")],xpred_FE_town2020_age2020_excess[,c("rate_total","ratepred_total","rate.M.15.54.anni","ratepred.M.15.54.anni")])
+colnames(x6) <- xnames
+summary(x6[,1:4])
+summary(x6[,5:7])
+sapply(x6,sd)
+x7 <- sapply(x6,quantile,probs=c(0.25,0.5,0.75,0.99))
+x7
+
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+writeData(wb,	sheet="summary",	x=x7,	startRow=35,startCol=2)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+
+```
+
+#### Examining Estimated Fixed Effect
+
+
+Quantiles for predicted rate_total from FE model
+
+* 2019 Actual
+* 2020 Actual
+* 2020 Excess
+
+The 99th percentile from the RE estimates above and the FE estimates here are broadly in line: 1.17% here, 1.00% above. 
+```{r}
+quantile(xpred_FE_town2020_age2019_mort$ratepred_total,probs=c(.25,0.5,0.75,0.9,0.977,0.99))
+quantile(xpred_FE_town2020_age2020_mort$ratepred_total,probs=c(.25,0.5,0.75,0.9,0.977,0.99))
+quantile(xpred_FE_town2020_age2020_excess$ratepred_total,probs=c(.25,0.5,0.75,0.9,0.977,0.99))
+```
+
+Display the five towns with highest excess mortality. Note that two of the three highest have significant FE estimates. This gives more confidence that the 99th percentile estimate (from both FE and RE estimator) is not just a statistical outlier. 
+```{r topTowns}
+# The z-value of the estimated 2020 FE is relative to zero, whereas I think we care about the z-value 
+# relative to the average
+# This code calculates the z relative to the mean of the 2020 FE estimate
+x0 <- xFEtown_town2020_age2020$Estimate.before
+x1 <- xFEtown_town2020_age2020$Estimate.2020
+#xFEtown_town2020_age2020_NOMfirst$zvalue.2020.vszero <- (x1-mean(x1)) / xFEtown_town2020_age2020_NOMfirst$`Std. Error.2020`
+
+# Join the predictions and the estimated parameters
+xpred_FE_town2020_age2020_joined <- left_join(xpred_FE_town2020_age2020_excess,xFEtown_town2020_age2020,by = "NOME_COMUNE")
+rownames(xpred_FE_town2020_age2020_joined) <- xpred_FE_town2020_age2020_joined$NOME_COMUNE
+
+# Something funny going on - Nembro and Schilpario have close to same overall rate
+# but very different FEs. The FEs should be close, not Schilpario negative. 
+# ANSWER: need to look at excess mortality. Schilpario has high base mortality (earlier years)
+#  but not that high excess mortality
+#x2 <- x1[which(x1[,"NOME_COMUNE"] == "Schilpario" | x1[,"NOME_COMUNE"] == "Nembro"),]
+#x2[,c("NOME_COMUNE","pop.M.0.14.anni","rate.M.0.14.anni","pop.M.15.64.anni","rate.M.15.64.anni","pop.M.65.74.anni","rate.M.65.74.anni","pop.M.75.anni.e.piu","rate.M.75.anni.e.piu","pop.F.0.14.anni","rate.F.0.14.anni","pop.F.15.64.anni","rate.F.15.64.anni","pop.F.65.74.anni","rate.F.65.74.anni","pop.F.75.anni.e.piu","rate.F.75.anni.e.piu","rate_total","ratepred_total","Estimate","z value")]
+
+# Write total population into the excess data frame (the excess mortality will have been set to zero because it is differenced)
+xpred_FE_town2020_age2020_joined$pop_total <- xpred_FE_town2020_age2020_mort$pop_total
+# Sort the 2020 excess mortality predictions by Predicted Excess Mortality (smallest to largest)
+x3 <- xpred_FE_town2020_age2020_joined[order(xpred_FE_town2020_age2020_joined$ratepred_total),]
+x3b <- xpred_FE_town2020_age2020_mort[order(xpred_FE_town2020_age2020_joined$ratepred_total),]
+y1 <- c("NOME_COMUNE","pop_total","rate_total","ratepred_total","Estimate.2020", "z value.2020", "rate.M.55.64.anni", "rate.M.65.74.anni")
+y1b <- c("NOME_COMUNE","pop_total","rate_total","ratepred_total", "ratepred.M.65.74.anni","ratepred.F.65.74.anni")
+
+#y2 <- c("NOME_COMUNE","pop.M.0.14.anni","rate.M.0.14.anni","pop.M.15.64.anni","rate.M.15.64.anni","pop.M.65.74.anni","rate.M.65.74.anni","pop.M.75.anni.e.piu","rate.M.75.anni.e.piu","pop.F.0.14.anni","rate.F.0.14.anni","pop.F.15.64.anni","rate.F.15.64.anni","pop.F.65.74.anni","rate.F.65.74.anni","pop.F.75.anni.e.piu","rate.F.75.anni.e.piu","rate_total","ratepred_total","Estimate","z value")
+
+x4 <- x3[,y1]
+# Then display the tail - the top 5 towns
+#tail(x4)
+x5 <- dim(x4)
+x4[(x5[1]-15):x5[1],]
+
+# The following sorts by "Estimate.2020" and writes out the last few
+#x6 <- xpred_FE_town2020_age2020_joined[order(xpred_FE_town2020_age2020_joined$Estimate.2020),]
+#x6[(x5[1]-15):x5[1],y1]
+
+```
+
+
+```{r,include=FALSE}
+
+x5 <- dim(x4)
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+writeData(wb,	sheet="summary",	x=x4[(x5[1]-15):x5[1],],	startRow=44,startCol=1)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+
+```
+
+Code to print out the count and population for a specific town
+```{r,include=FALSE,eval=FALSE}
+xpred_FE_town2020_age2019_mort[xpred_FE_town2020_age2019_mort$NOME_COMUNE == "Camerata Cornello",c("pop.M.55.64.anni","count.M.55.64.anni","pop.M.65.74.anni","count.M.65.74.anni")]
+xpred_FE_town2020_age2020_mort[xpred_FE_town2020_age2020_mort$NOME_COMUNE == "Camerata Cornello",c("pop.M.55.64.anni","count.M.55.64.anni","pop.M.65.74.anni","count.M.65.74.anni")]
+```
+
+
+```{r writeHistogram,include=FALSE}
+
+# Define a simple trim-percentile function (from https://stackoverflow.com/questions/53833773/how-to-make-a-trimmed-histogram-in-r)
+trim_q <- function(x, lb, ub){
+  x[(x > quantile(x, lb)) & (x < quantile(x, ub))]
+}
+# This would do the 2020 estimated effect (which is in log terms and has some outliers)
+x1 <- xFEtown_town2020_age2020$Estimate.2020
+x1 <- trim_q(xFEtown_town2020_age2020$Estimate.2020,lb=0.01,ub=0.99)
+x1 <- x1 - mean(x1)
+# This instead uses the predicted 2020 excess mortality
+# This would display ACTUAL rather than predicted
+x1 <- xpred_FE_town2020_age2020_excess$rate_total
+x1 <- xpred_FE_town2020_age2020_excess$ratepred_total
+x1 <- trim_q(x1,lb=0.01,ub=0.99)
+
+pdf("histFE.pdf")
+hist(x1,
+     breaks=20,
+     xlab = "Excess Mortality (trimmed at .01 and .99 pctl)",
+     main = "Estimated 2020 Overall Excess Mortlity")
+dev.off()
+
+sd(xFEtown_town2020_age2020$Estimate.2020)
+```
+
+
+## Write out the results
+
+
+```{r}
+write.csv(xpred_FE_town2020_age2020_joined,"xpred_FE_town2020_age2020_excess.csv", row.names = FALSE)
+write.csv(xpred_FE_town2020_age2020_mort,"xpred_FE_town2020_age2020_mort.csv", row.names = FALSE)
+write.csv(xpred_FE_town2020_age2019_mort,"xpred_FE_town2020_age2019_mort.csv", row.names = FALSE)
+
+
+
+```
+
+US Population 2019 from https://www.census.gov/data/tables/time-series/demo/popest/2010s-national-detail.html stored in "USCensus_nc-est2019-agesex-res.xlsx"
+
+```{r}
+USpop <- xdisplay2019pop[,4:6]
+x1 <- matrix(c(30950230,29620616,60570846,20499219,21949318,42448537,86133585,85028292,171161877,14699579,16783854,31483433,9374711,13200119,22574830,161657324,166582199,328239523),nrow=6,ncol=3,byrow=TRUE)
+USpop[,] <- x1[,]
+USweights <- USpop / USpop[6,3]
+USexcess99 <- USpop
+# Get excess mortality, but use only the age-specific
+x1 <- as.matrix(as.data.frame(xdisplay_RE_town2020_age2020[1]))
+USexcess99[1:5,1:2] <- x1[1:5,4:5]
+x2 <- USweights[1:5,1:2] * USexcess99[1:5,1:2]
+USexcess99[6,1:2] <- colSums(x2)/USweights[6,1:2]
+USexcess99[1:5,3] <- rowSums(x2)/USweights[1:5,3]
+USexcess99[6,3] <- sum(x2)
+# re-do for middle of distribution
+USexcessmid <- USpop
+USexcessmid[1:5,1:2] <- x1[1:5,1:2]
+x2 <- USweights[1:5,1:2] * USexcessmid[1:5,1:2]
+USexcessmid[6,1:2] <- colSums(x2)/USweights[5,1:2]
+USexcessmid[1:5,3] <- rowSums(x2)/USweights[1:5,3]
+USexcessmid[6,3] <- sum(x2)
+
+# To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
+#install.packages("openxlsx")
+#require("openxlsx")
+wb <- loadWorkbook(file="results1_55.xlsx")
+# Re-weighted age-specific to US population
+writeData(wb,	sheet="summary",	x=USexcess99,	startRow=18,startCol=14)
+# US population weights
+writeData(wb,	sheet="summary",	x=USweights,	startRow=27,startCol=14)
+saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+```
+
+

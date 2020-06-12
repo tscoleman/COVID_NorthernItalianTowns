@@ -1,0 +1,384 @@
+---
+title: "Reading Data for Estimating COVID IFR from data on selected Italian cities"
+author: '[Thomas Coleman](http://www.hilerun.org/econ)'
+date: '`r format(Sys.Date(), "%d %b %Y")`'
+output:
+  html_notebook
+---
+'  pdf_document 
+'  html_notebook:
+'    code_folding: hide
+'  beamer_presentation:
+'    keep_tex: true
+' note the tabs in the "output ..." above - they are necessary or knitr won't work 
+' click the "Run all" button then "Knit" button to produce pdf and Beamer .pdf and .tex
+
+## Introduction
+
+This workbook is called by "ItalyTown_master.Rmd" by converting to .r and "source"
+
+NB: the code chunks below have been "hidden" by setting "include=FALSE" in the r-header. To make them visible (in the original .Rmd) simply replace "include=FALSE" with "include=FALSE"
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing a code chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r initialize}
+# But don't clear workspace - that is done in "ItalyTown_master.Rmd"
+library(knitr)
+library("MASS")           ## For nb model. Needs to be before "dplyr" because overwrite "select"
+library("lme4")           ## For random effects Poisson & Negative Binomial
+library("dplyr")          ## load For doing data manipulation, such as group_by and sum. The "select" function gets 
+                          # masked so call by dplyr::select
+
+```
+
+
+## Data from Italian Towns
+
+Ago found death counts by town published by ISTAT: https://www.istat.it/it/archivio/240401 – a cover page titled _Decessi e Cause di Morte: Cosa Produce L’ISTAT_ (Deaths and Causes of Death: What ISTAT Produces). Under _Dataset analitico con i decessi giornalieri in ogni singolo comune di residenza_ (Analytical dataset with daily deaths in each single municipality of residence (https://www.istat.it/it/files//2020/03/Dataset-decessi-comunali-giornalieri-e-tracciato-record.zip)) they report mortality “by gender and five-year age classes (for the first 4 months of the years from 2015 to 2019 for all 7904 municipalities in Italy, for the first three months of 2020 for 6,866 Municipalities and for the period from 1 January to 15 April 2020 for the 4,433 Municipalities verified in ANPR).” 
+
+
+
+
+#### Data Sources
+
+From ISTAT:
+
+* Mortality: 
+  + Deaths by day from 1-jan -> 30-apr for the years 2015, 2016, 2017, 2018, 2019, and for 1-jan -> 15-apr for 2020
+    + Must exclude 16-apr -> 30-apr
+  + Deaths by 5-year age group: code in 8th column “CL_ETA”: 0= 0 1=1-4 2=5-9 3=10-14 4=15-19 5=20-24 6=25-29 7=30-34 8=35-39 9=40-44 10=45-49 11=50-54 12=55-59 13=60-64 14=65-69 15=70-74 16=75-79 17=80-84 18=85-89 19=90-94 20=95-99 21=100+
+  + Deaths for Male, Female, Total
+  + By town
+* Population:
+  + Source: Web: http://demo.istat.it/pop2019/index3.html
+  + Download individual Provinces (Milano, Bergamo, Brescia, Lodi) under region Lombardia, 
+  + Change the “2019” to “2018” etc in the URL above
+  + ID "Denominazione" matches the mortality ID "NOME_COMUNE"
+  + by male and female
+  + by single years 
+  + Must sum up to above ages in R. 
+  + Only have population for 2019, so use this for 2020 
+ 
+
+## Reading in and Transforming the Data
+
+
+
+Read in the _new_ data and sum across dates (for each year) to provide the count data for running count (Poisson and Negative Binomial) regressions. 
+```{r readcounts, include=FALSE}
+# For some reason the accented è is not read properly here (although it is in the other dataset)
+# Problem solved 6-jun-20: This file seems to be encoded iso-8859-1 (which might be "latin1")
+# To find file encoding, in terminal type
+#   file -I "filename"
+# Files below seem to be utf-8 but this one is different and the accents were not done right
+countdata <- read.csv(file="data/comuni_giornaliero.csv", header=TRUE, sep=",", skip=0,comment.char="#",na.strings=c("n.d."),fileEncoding = "iso-8859-1") #, encoding = "UTF-8"
+#class(countdata)
+#class(countdata$SETTIMANA)
+#levels(countdata$CLASSE_DI_ETA)
+
+# PROBLEMS: 
+# 1) many days for 2020 are "n.d." i.e. no data. Those are read in as "NA" but really should be ignored rather
+#    than cumulated to NA. For now, replace NA by 0. We cannot simply omit missing rows, because each row
+#    contains data for that day in 2015, 2016, ... so it would drop deaths for those earlier years
+#    Setting to zero is the same as omitting those days for 2020, and may produce an undercount of deaths
+#    (but not overcount)
+#countdata <- na.omit(countdata)
+countdata[is.na(countdata)] <- 0
+# This drops about 300k obs
+
+# Drop observations for 16-apr to 30-apr - there are data for 2015-2019 but NOT 2020
+# The data is in the variable "GE" and is coded as "0415" etc which comes through as 415:
+x1 <- countdata$GE <= 415
+countdata <- countdata[x1,]
+
+# Create the age categories 0-14, 15-64, 65-74, 75+ to match the prior data
+# ∙ Age group code in 8th column “CL_ETA”: 0= 0 1=1-4 2=5-9 3=10-14 4=15-19 5=20-24 6=25-29 7=30-34 8=35-39 9=40-44 10=45-49 11=50-54 12=55-59 13=60-64 14=65-69 15=70-74 16=75-79 17=80-84 18=85-89 19=90-94 20=95-99 21=100+
+countdata$CLASSE_DI_ETA <- "0-14 anni"
+countdata[countdata$CL_ETA >= 0 & countdata$CL_ETA <= 3,"CLASSE_DI_ETA"] <- "0-14 anni"
+countdata[countdata$CL_ETA >= 4 & countdata$CL_ETA <= 11,"CLASSE_DI_ETA"] <- "15-54 anni"
+countdata[countdata$CL_ETA >= 12 & countdata$CL_ETA <= 13,"CLASSE_DI_ETA"] <- "55-64 anni"
+countdata[countdata$CL_ETA >= 14 & countdata$CL_ETA <= 15,"CLASSE_DI_ETA"] <- "65-74 anni"
+countdata[countdata$CL_ETA >= 16 ,"CLASSE_DI_ETA"] <- "75 anni e piu"
+# Put on an extra column "xdata" which later will force summation for all age groups
+countdata$xdata <- 1
+
+# PROBLEM
+# 2) Many towns do not have entries for deaths 0-14 for any years, so that row is not created in the "long" dataset. It 
+#    should be - zero deaths is a piece of data. How to force that?
+#    Idea - make a big dataframe with all towns and all age groups, but with a "fake data" item that will
+#    force the summation below to sum all the variables
+# This creates a "dummy" dataframe of unique towns, zeros out all the counts, 
+
+x1 <- distinct(countdata,NOME_COMUNE,.keep_all = TRUE)
+x2 <- colnames(x1)[10:27]
+for (i in x2) {
+  x1[,i] <- 0
+}
+# Insert the age categories in, so that we have one of each
+x1$CLASSE_DI_ETA <- "0-14 anni"
+x2 <- x1
+x2$CLASSE_DI_ETA <- "15-54 anni"
+x2b <- x1
+x2b$CLASSE_DI_ETA <- "55-64 anni"
+x3 <- x1
+x3$CLASSE_DI_ETA <- "65-74 anni"
+x4 <- x1
+x4$CLASSE_DI_ETA <- "75 anni e piu"
+# stack the four dummy data arrays, then the real array on top of the dummies
+x1 <- rbind(x1,x2,x2b,x3,x4)
+
+countdata <- rbind(countdata,x1)
+
+# Some towns report no deaths - need to exclude them
+# This seems like a really stupid way to exclude them, but here it is:
+#   - Summarize by "NOME_COMUNE" 
+#   - Check in "T_20_sum" (the deaths for 2020) is zero
+#   - Take that list of NOME_COMUNE and loop over it, to get the locations of all the daily rows for all those towns
+#   - Exclude those rows from countdata
+xx1 <- countdata %>%
+  group_by(REG, PROV, COD_PROVCOM, NOME_REGIONE,NOME_PROVINCIA, NOME_COMUNE) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(!c(TIPO_COMUNE_sum,CL_ETA_sum,GE_sum))
+x1 <- xx1[xx1$T_20_sum == 0,"NOME_COMUNE"]
+#x2 <- distinct(x1,NOME_COMUNE)
+x2 <- (unique(x1))
+# Make a vector which will be TRUE for all towns with zero 2020 deaths
+x3 <- countdata$NOME_COMUNE == "xxx"
+for (i in x2$NOME_COMUNE) {
+  x3 <- x3 | countdata$NOME_COMUNE == i
+}
+x4 <- countdata$NOME_COMUNE[x3]
+towns_no_2020 <- unique(x4)
+countdata <- countdata[!x3,]
+
+
+# Many towns do not report any deaths for some age groups, but the "goup_by" and "summarize" will put in zero
+count_by_age <- countdata %>%
+  group_by(REG, PROV, COD_PROVCOM, NOME_REGIONE,NOME_PROVINCIA, NOME_COMUNE, CLASSE_DI_ETA) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(!c(TIPO_COMUNE_sum,CL_ETA_sum,GE_sum))
+# strip out the _sum
+colnames(count_by_age) <- gsub("_sum","",colnames(count_by_age))
+colnames(count_by_age) <- gsub("M_","MASCHI_",colnames(count_by_age))
+colnames(count_by_age) <- gsub("F_","FEMMINE_",colnames(count_by_age))
+colnames(count_by_age) <- gsub("T_","TOTALE_",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_20","_2020",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_15","_2015",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_16","_2016",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_17","_2017",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_18","_2018",colnames(count_by_age))
+colnames(count_by_age) <- gsub("_19","_2019",colnames(count_by_age))
+
+#count_by_age <- as.data.frame(count_by_age)
+
+```
+
+
+Read in the population (by single year age). Need to sum over ages and then match against towns - the "COD_PROVCOM" from count data matches the "Codice Comune" from the population data. 
+
+
+
+```{r readpop,include=FALSE}
+# Read in the population data, which is by single year ages and separately by region
+xyrs <- c("2017","2018","2019")
+xregions <- c("Bergamo","Brescia","Lodi","Milano")
+for (yr in xyrs){
+  for (region in xregions) {
+    assign(paste("pop",region,yr,sep=""),read.csv(file=paste("data/",region,yr,".csv",sep=""), header=TRUE, sep=",", skip=2,comment.char="#", fileEncoding = "UTF-8"))
+  }
+  assign(paste("popdata",yr,sep=""),rbind(paste("popBergamo",yr,sep=""),paste("popBrescia",yr,sep=""),paste("popLodi",yr,sep=""),paste("popMilano",yr,sep="")))
+}
+
+# Stack the four regions on top of each other
+popdata2017 <- rbind(popBergamo2017,popBrescia2017,popLodi2017,popMilano2017)
+popdata2018 <- rbind(popBergamo2018,popBrescia2018,popLodi2018,popMilano2018)
+popdata2019 <- rbind(popBergamo2019,popBrescia2019,popLodi2019,popMilano2019)
+popdata2020 <- popdata2019              # No population for 2020 pubished yet
+popdata2017$AgeInt <- as.integer(as.character(popdata2017$Età))
+popdata2018$AgeInt <- as.integer(as.character(popdata2018$Età))
+popdata2019$AgeInt <- as.integer(as.character(popdata2019$Età))
+popdata2020$AgeInt <- as.integer(as.character(popdata2020$Età))
+# Sum up the age categories
+# Loop over years, using "get" to populate "popdate" and then "assign" to put data back into the yearly variables
+xyrs <- c(xyrs,"2020")
+for (yr in xyrs) {
+  popdata <- get(paste("popdata",yr,sep=""))
+  popdata$age <- "xx"
+  popdata[,"age"] <- ifelse(popdata$AgeInt >= 0 & popdata$AgeInt <= 14, "0-14 anni",popdata[,"age"])
+  popdata[,"age"] <- ifelse(popdata$AgeInt >= 15 & popdata$AgeInt <= 54, "15-54 anni",popdata[,"age"])
+  popdata[,"age"] <- ifelse(popdata$AgeInt >= 55 & popdata$AgeInt <= 64, "55-64 anni",popdata[,"age"])
+  popdata[,"age"] <- ifelse(popdata$AgeInt >= 65 & popdata$AgeInt <= 74, "65-74 anni",popdata[,"age"])
+  popdata[,"age"] <- ifelse(popdata$AgeInt >= 75 , "75 anni e piu",popdata[,"age"])
+  assign(paste("popdata",yr,sep=""),popdata)
+}
+
+
+# Now group by and sum over towns and age groups. Select the male and female total columns
+# Do each year separately then join
+
+x2017 <- popdata2017 %>%
+  group_by(Codice.comune,Denominazione,age) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(c(Codice.comune,Denominazione,age,Totale.Maschi_sum,Totale.Femmine_sum))
+colnames(x2017) <- c("Codice.comune","Denominazione","CLASSE_DI_ETA","MASCHI_pop_2017","FEMMINE_pop_2017")
+x2018 <- popdata2018 %>%
+  group_by(Codice.comune,Denominazione,age) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(c(Codice.comune,Denominazione,age,Totale.Maschi_sum,Totale.Femmine_sum))
+colnames(x2018) <- c("Codice.comune","Denominazione","CLASSE_DI_ETA","MASCHI_pop_2018","FEMMINE_pop_2018")
+x2019 <- popdata2019 %>%
+  group_by(Codice.comune,Denominazione,age) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(c(Codice.comune,Denominazione,age,Totale.Maschi_sum,Totale.Femmine_sum))
+colnames(x2019) <- c("Codice.comune","Denominazione","CLASSE_DI_ETA","MASCHI_pop_2019","FEMMINE_pop_2019")
+x2020 <- popdata2020 %>%
+  group_by(Codice.comune,Denominazione,age) %>% 
+  summarise_if(is.numeric,list(sum=sum)) %>%
+  dplyr::select(c(Codice.comune,Denominazione,age,Totale.Maschi_sum,Totale.Femmine_sum))
+colnames(x2020) <- c("Codice.comune","Denominazione","CLASSE_DI_ETA","MASCHI_pop_2020","FEMMINE_pop_2020")
+
+x1 <- inner_join(x=x2017,y=x2018)
+x1 <- inner_join(x=x1,y=x2019)
+pop_by_age <- inner_join(x=x1,y=x2020)
+
+# Convert to factor
+pop_by_age$CLASSE_DI_ETA <- factor(pop_by_age$CLASSE_DI_ETA)
+
+
+# Sum for just single year - testing why so many rows dropped
+
+#x1 <- popdata %>%
+#  group_by(Codice.comune,Denominazione,age2019) %>% 
+#  summarise_if(is.numeric,list(sum=sum)) %>%
+#  dplyr::select(c(Codice.comune,Denominazione,age2019,Totale.Maschi_sum,Totale.Femmine_sum))
+#colnames(x1) <- c("Codice.comune","Denominazione","CLASSE_DI_ETA","MASCHI_pop_2019","FEMMINE_pop_2019")
+
+#pop_by_age
+
+
+
+
+```
+
+
+
+#### Reshape the data
+
+Now we need to reshape the data, because the years are strung out in wide format, while the ages are in long format.
+
+```{r reshape, include=FALSE}
+
+# Join the counts and population, based on id "COD_PROVCOM" in count data & "Codice.comune" in population
+xjoined <- inner_join(x=count_by_age,y=pop_by_age,by=c("COD_PROVCOM"="Codice.comune","CLASSE_DI_ETA"))
+
+
+# This converts wide to long but there is a single new column "sex_year" which combines both sex and year
+count_long1 <- reshape(xjoined, 
+  varying = c("MASCHI_2017","MASCHI_pop_2017","MASCHI_2018","MASCHI_pop_2018",
+              "MASCHI_2019","MASCHI_pop_2019","MASCHI_2020","MASCHI_pop_2020",
+              "FEMMINE_2017","FEMMINE_pop_2017","FEMMINE_2018","FEMMINE_pop_2018",
+              "FEMMINE_2019","FEMMINE_pop_2019","FEMMINE_2020","FEMMINE_pop_2020"   ),
+  timevar = "sex_year", 
+  times = c("M2017","M2018","M2019","M2020","F2017","F2018","F2019","F2020"), 
+  v.names = c("count","pop"),
+  drop = c("MASCHI_2015","MASCHI_2016", "FEMMINE_2015","FEMMINE_2016","TOTALE_2015","TOTALE_2016","TOTALE_2017","TOTALE_2018","TOTALE_2019","TOTALE_2020"),
+#  new.row.names = 1:1000,
+  direction = "long")
+
+# This seems pretty stupid but seems to work
+x1 <- gsub("M","",count_long1$sex_year)
+x1 <- gsub("F","",x1)
+x2 <- as.integer(x1)
+count_long1$year <- x2
+count_long1$yearfact <- factor(x1)
+
+count_long1$sex <- factor(substr(count_long1$sex_year,1,1))
+#x1 <- count_long1[order(count_long1$NOME_COMUNE),]
+
+# Delete any towns that have zero population for any age group. Seems there are only two towns 
+# (Cassiglio and Valvestino)
+x1 <- count_long1$pop == 0
+x2 <- unlist(unique(count_long1[x1,"NOME_COMUNE"]))
+
+#x4 %>% filter(count_long1 == c(x2))
+
+x3 <- count_long1$NOME_COMUNE == "xxx"
+for (i in x2) {
+  x3 <- x3 | count_long1$NOME_COMUNE == i
+}
+count_long1 <- count_long1[!x3,]
+#x3 <- count_long1[which(count_long1$NOME_COMUNE == )]
+
+```
+
+#### Indicator Variables 
+
+Create indicator variables, to run "by-hand" interactions for both FE and RE models.
+
+First, make an indicator variable for the 2020xTown interaction - we already have the factor for the non-interacted ("NOM_COMUNE"). Plus an indicator for agex2020
+```{r createIndicators, include=FALSE}
+# Make factor for COVID 2020, and select the provinces of Milano, Bergamo, Brescia, Lodi 
+#count_long1$COVID2020 <- "0-0Before"
+#count_long1$COVID2020[which(count_long1$year == 2020)] <- "2020"
+count_long1$COVID2020 <- count_long1$year == 2020
+count_long1$COVID2020 <- as.factor(count_long1$COVID2020)
+count_long1_subset <- count_long1[count_long1$NOME_PROVINCIA %in% c("Milano", "Bergamo", "Brescia", "Lodi"),]
+
+# Insert as character, then re-factorize
+# Using "aaBefore" will ensure that this is excluded as the first factor (sorted alpha) 
+# Thus, all the named towns will have estimated FEs
+# Using "aaBefore" makes "before" the excluded category so all towns in 2020 have estimated effects, IF the NOME_COMUNE_2020
+# is put first (before the factors CLASSE_DI_ETA ...)
+#    but does not match (in terms of coefficient values) with the default using "NOME_COMUNE"
+count_long1$NOME_COMUNE_2020 <- "aaBefore"
+# Using "zzAfter" makes the first alpha town the excluded, which matches with the default using "NOME_COMUNE * COVIDTRUE"
+#count_long1$NOME_COMUNE_2020 <- "aaBefore"
+count_long1$NOME_COMUNE_2020[which(count_long1$year == 2020)] <- as.character(count_long1$NOME_COMUNE[which(count_long1$year == 2020)])
+# Using "zzAfter" will ensure that the first town is excluded (sorted alpha) 
+# NB - I DO NOT USE THIS VARIABLE IN THE ESTIMATIONS but create it here if I need it
+count_long1$NOME_COMUNE_after <- "zzAfter"
+count_long1$NOME_COMUNE_after[which(count_long1$year < 2020)] <- as.character(count_long1$NOME_COMUNE[which(count_long1$year < 2020)])
+
+count_long1$CLASSE_DI_ETA_sex <- paste(count_long1$CLASSE_DI_ETA,count_long1$sex)
+
+# Create the age-sex categories interacted with 2020 indicator
+# Label the "pre-2020" as "0-0Before" which forces it to be before "0-14 anni" in alpha sort, so it is the first and excluded category
+count_long1$CLASSE_DI_ETA_sex_2020 <- "0-0Before"
+count_long1$CLASSE_DI_ETA_sex_2020[which(count_long1$year == 2020)] <- as.character(count_long1$CLASSE_DI_ETA_sex[which(count_long1$year == 2020)])
+
+# Also make an indicator which is age but not sex (for 2020). Use this to test for sex effect in excess mortality
+#  via a LLR test
+# The rather odd naming ("0-0Before") forces the "before" variable to be excluded, so that we can easily see
+# the tests for 2020 excess mortality vs the "before"
+count_long1$CLASSE_DI_ETA_2020 <- "0-0Before"
+count_long1$CLASSE_DI_ETA_2020[which(count_long1$year == 2020)] <- as.character(count_long1$CLASSE_DI_ETA[which(count_long1$year == 2020)])
+
+# The two commands below set the "sex_2020" indicator to be either the first or last (alpha-sorted) indicator
+# and so will change what is the excluded category
+count_long1$sex_2020 <- "aaBefore"
+count_long1$sex_2020 <- "zzAfter"
+count_long1$sex_2020[which(count_long1$year == 2020)] <- as.character(count_long1$sex[which(count_long1$year == 2020)])
+
+count_long1$NOME_COMUNE_2020 <- as.factor(count_long1$NOME_COMUNE_2020)
+count_long1$NOME_COMUNE_after <- as.factor(count_long1$NOME_COMUNE_after)
+count_long1$CLASSE_DI_ETA_sex <- as.factor(count_long1$CLASSE_DI_ETA_sex)
+count_long1$CLASSE_DI_ETA_sex_2020 <- as.factor(count_long1$CLASSE_DI_ETA_sex_2020)
+count_long1$CLASSE_DI_ETA_2020 <- as.factor(count_long1$CLASSE_DI_ETA_2020)
+count_long1$sex_2020 <- as.factor(count_long1$sex_2020)
+# Select the provinces of Milano, Bergamo, Brescia, Lodi 
+count_long1_subset <- count_long1[count_long1$NOME_PROVINCIA %in% c("Milano", "Bergamo", "Brescia", "Lodi"),]
+
+```
+
+```{r cleanup}
+
+xx1 <- ls()
+xx2 <- substring(xx1,1,1)
+xx1 <- xx1[xx2 == "x"]
+rm(list=xx1)
+rm(list=c("xx1","xx2"))
+
+```
+

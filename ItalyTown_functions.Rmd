@@ -1,0 +1,452 @@
+---
+title: "Functions for Estimating COVID IFR from data on selected Italian cities"
+author: '[Thomas Coleman](http://www.hilerun.org/econ)'
+date: '`r format(Sys.Date(), "%d %b %Y")`'
+output:
+  html_notebook
+---
+'  pdf_document 
+'  html_notebook:
+'    code_folding: hide
+'  beamer_presentation:
+'    keep_tex: true
+' note the tabs in the "output ..." above - they are necessary or knitr won't work 
+' click the "Run all" button then "Knit" button to produce pdf and Beamer .pdf and .tex
+
+## Introduction
+
+This workbook defines all the functions used in "ItalyTown_master.Rmd". It is converted to .r and then "source"d
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing a code chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+
+
+```{r overdisp, include=FALSE}
+# From excellent site http://bbolker.github.io/mixedmodels-misc/glmmFAQ.html
+# Function for calculating overdispersion of a model.
+# I've modified to do either Pearson residuals or Deviance residuals.
+# I thought deviance residuals were the better
+overdisp_fun <- function(model,type="deviance") {
+  # Works for type="pearson" or "deviance"
+    rdf <- df.residual(model)
+    rp <- residuals(model,type=type)
+    resid.chisq <- sum(rp^2)
+    prat <- resid.chisq/rdf
+    pval <- pchisq(resid.chisq, df=rdf, lower.tail=FALSE)
+    if (type == "deviance") {
+      x1 <- c(deviance=resid.chisq,ratio=prat,rdf=rdf,p=pval)
+    }
+    else {
+      x1 <- c(pearson=resid.chisq,ratio=prat,rdf=rdf,p=pval)
+    }
+    x1
+}
+
+```
+
+
+## Results for RE and FE Models
+
+#### Summary for RE Model
+
+
+Function that creates summary data for input to "predict"
+```{r REsummary, include=FALSE}
+
+
+create_REsummaryData <- function(xtestdata,xpopdata2019,xpopdata2020,nsigma=2.5) {
+  # This generates "data" for the base case of 
+  #   - Before (average of 2017, 2018, 2019) for 4 age groups and M / F - rows 1-8 1-10
+  #   - 2020 for 4 ages, and M / F, at the average of the 2020 x town RE - rows 9-16 11-20
+  
+  # The return is a list with the following:
+  # excessrates, 2020rates, 2019rates, pop2019, pop2020, 2019counts, 2020counts)
+  xtestdata[1:10,"COVID2020"] <- FALSE
+  # For 2019 (pre-2020)
+  x1 <- xtestdata[which(xtestdata$sex == "F"),]
+  x1 <- x1[1:5,"CLASSE_DI_ETA_sex"]
+  xtestdata[6:10,"CLASSE_DI_ETA_sex"] <- x1
+  # For 2020
+  xtestdata[11:20,"COVID2020"] <- TRUE
+  xtestdata[11:20,"CLASSE_DI_ETA_sex"] <- xtestdata[1:10,"CLASSE_DI_ETA_sex"]
+  # This forces the age & sex categories (from 1:10) into the 2020 variable, so it "turns on" this indicator
+  xtestdata[11:20,"CLASSE_DI_ETA_sex_2020"] <- xtestdata[1:10,"CLASSE_DI_ETA_sex"]
+
+  # Sum up 2019 population
+  x2019 <- xpopdata2019 %>%
+    group_by(age) %>% 
+    summarise_if(is.numeric,list(sum=sum)) %>%
+    dplyr::select(c(age,Totale.Maschi_sum,Totale.Femmine_sum))
+  colnames(x2019) <- c("CLASSE_DI_ETA","MASCHI_pop_2019","FEMMINE_pop_2019")
+  x2020 <- xpopdata2020 %>%
+    group_by(age) %>% 
+    summarise_if(is.numeric,list(sum=sum)) %>%
+    dplyr::select(c(age,Totale.Maschi_sum,Totale.Femmine_sum))
+  colnames(x2020) <- c("CLASSE_DI_ETA","MASCHI_pop_2020","FEMMINE_pop_2020")
+  
+  # Insert 2019 male & female population
+  xtestdata[1:5,"pop"] <- x2019[1:5,"MASCHI_pop_2019"]
+  xtestdata[6:10,"pop"] <- x2019[1:5,"FEMMINE_pop_2019"]
+  # 2020 male & female population
+  xtestdata[11:15,"pop"] <- x2020[1:5,"MASCHI_pop_2020"]
+  xtestdata[16:20,"pop"] <- x2020[1:5,"FEMMINE_pop_2020"]
+  xtestdata[11:20,"pop"] <- xtestdata[1:10,"pop"]
+  xtestdata[20:25,"pop"] <- xtestdata[11:20,"pop"]
+  xtestdata[31:50,"pop"] <- xtestdata[1:20,"pop"]
+  
+  # Keep just the first 24 rows (1-8 pre-2020, 9-16 mean 2020, 17-24 +2sigma 2020, 
+  #     25-32 the excess at mean 2020, 33-40 excess at +2sigma)
+  xtestdata <- xtestdata[1:50,]
+  
+  # Create "empty" matrices for storing counts, etc. Do it here to create labels etc. only once.
+  xdisplay2020pop <- as.data.frame(matrix(0,nrow=6,ncol=6))
+  colnames(xdisplay2020pop) <- c("MaleMid","FemaleMid","M+FMid",paste("Male",nsigma,"sigma"),paste("Female",nsigma,"sigma"),paste("M+F",nsigma,"sigma"))
+  rownames(xdisplay2020pop) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+","Total")
+  xdisplay2019pop <- xdisplay2020pop
+
+    # population for 2019
+  xdisplay2019pop[1:5,1] <- xtestdata[1:5,"pop"]
+  xdisplay2019pop[1:5,2] <- xtestdata[6:10,"pop"]
+  xdisplay2019pop[1:5,4] <- xtestdata[1:5,"pop"]
+  xdisplay2019pop[1:5,5] <- xtestdata[6:10,"pop"]
+  xdisplay2019pop[6,] <- colSums(xdisplay2019pop[1:5,])
+  xdisplay2019pop[,3] <- rowSums(xdisplay2019pop[,1:2])
+  xdisplay2019pop[,6] <- rowSums(xdisplay2019pop[,4:5])
+  # population for 2020
+  xdisplay2020pop[1:5,1] <- xtestdata[11:15,"pop"]
+  xdisplay2020pop[1:5,2] <- xtestdata[16:20,"pop"]
+  xdisplay2020pop[1:5,4] <- xtestdata[11:15,"pop"]
+  xdisplay2020pop[1:5,5] <- xtestdata[16:20,"pop"]
+  xdisplay2020pop[6,] <- colSums(xdisplay2020pop[1:5,])
+  xdisplay2020pop[,3] <- rowSums(xdisplay2020pop[,1:2])
+  xdisplay2020pop[,6] <- rowSums(xdisplay2020pop[,4:5])
+
+  xnames <- list()
+  # Stupid, but I can't figure out how to create names of rows & columns crossed except by looping
+  for (i in colnames(xdisplay2019pop)) {
+    for (j in rownames(xdisplay2019pop)) {
+      xnames <- c(xnames,paste(i,".",j,sep=""))
+    }
+  }
+  xnames <- unlist(xnames)
+  
+  xdisplay <- list(xtestdata,xdisplay2019pop,xdisplay2020pop,xnames)
+#  xdisplay <- list(xdisplayexcess,xdisplay2020rates,xdisplay2019rates,xdisplay2019pop,xdisplay2020pop,xdisplay2019counts,xdisplay2020counts,xtestdata)
+  
+}
+
+
+# Function that calculates excess mortality rate summary
+
+create_REsummaryAll <- function(xtestdata,REmodel,nsigma=2.5,xdisplay2019pop,xdisplay2020pop) {
+  # This generates "data" for the base case of 
+  #   - Before (average of 2017, 2018, 2019) for 4 age groups and M / F - rows 1-8 1-10
+  #   - 2020 for 4 ages, and M / F, at the average of the 2020 x town RE - rows 9-16 11-20
+  #   - 2020 for 4 ages, and M / F, at +2nsigma (roughly 2sigma percentile) of the 2020 x town RE - rows 17-24
+  # The return is a list with the following:
+  # excessrates
+
+  # Generate counts (the argument "re.form=NA" forces no random effects in the predicted)
+  # Then calculate the predicted
+  xtestdata$count <-exp(predict(REmodel,newdata=xtestdata,re.form=NA)) 
+  # Extract the standard deviation estimate for the RE 2020 x town
+  # then bump up the predicted mortality by 2sigma, to get the 2sigma percentile 
+  x1 <- as.data.frame(VarCorr(REmodel))
+  xsdcor <- x1[2,"sdcor"]
+#  xtestdata[17:24,"count"] <- xtestdata[17:24,"count"] * exp(nsigma*xsdcor)
+#  xtestdata[17:24,"predrate"] <- xtestdata[17:24,"predrate"] * exp(nsigma*x2)
+  
+
+
+  # 2019 counts
+  xdisplay2019counts <- xdisplay2019pop
+  xdisplay2019counts[1:5,1] <- xtestdata[1:5,"count"]
+  xdisplay2019counts[1:5,2] <- xtestdata[6:10,"count"]
+  xdisplay2019counts[6,] <- colSums(xdisplay2019counts[1:5,])
+  xdisplay2019counts[,3] <- rowSums(xdisplay2019counts[,1:2])
+      # Duplicate base (2019) for "2sigma percentile"
+  xdisplay2019counts[,4:6] <- xdisplay2019counts[,1:3]
+  # 2020 counts - mid and 2sigma percentile of the RE 
+  xdisplay2020counts <- xdisplay2020pop
+  xdisplay2020counts[1:5,1] <- xtestdata[11:15,"count"]
+  xdisplay2020counts[1:5,2] <- xtestdata[16:20,"count"]
+  # Bump up the counts for the number of sigmas
+  xdisplay2020counts[1:5,4:5] <- xdisplay2020counts[1:5,1:2] * exp(nsigma*xsdcor)
+  xdisplay2020counts[6,] <- colSums(xdisplay2020counts[1:5,])
+  xdisplay2020counts[,3] <- rowSums(xdisplay2020counts[,1:2])
+  xdisplay2020counts[,6] <- rowSums(xdisplay2020counts[,4:5])
+  # Calculate the mortality rates
+  xdisplay2020rates <- xdisplay2020counts / xdisplay2020pop
+  xdisplay2019rates <- xdisplay2019counts / xdisplay2019pop
+  xdisplayexcess <- (xdisplay2020rates - xdisplay2019rates) 
+
+  xdisplay <- list(xdisplayexcess,xdisplay2020rates,xdisplay2019rates,xdisplay2019counts,xdisplay2020counts)  
+  #xdisplayexcess
+#  names(xdisplay) <- c("xdisplayexcess","xdisplayrates","xdisplaypop","xdisplay2019counts","xdisplay2020counts")
+  
+}
+
+```
+
+
+
+#### Estimated Parameters and Prediction from FE Estimator
+
+Function to create prediction together with averaged by age & sex (within town)
+```{r prediction, include=FALSE}
+
+#xtestdata <- count_long1_subset
+#xpopdata <- popdata
+#REmodel <- poisFE_town2020_age2020
+
+
+create_prediction <- function(xtestdata,REmodel) {
+  # Returns wide version of actual and predicted counts town-by-town, with many variables across columns (actual counts, predicted
+  # counts, for 0-14, 15-64, ...) as list in order:
+  #     1 xpred_wide_2019,
+  #     2 xpred_wide_2020,
+  #     3 xpred_wide_excess,
+  #  - Summary tables, 5x3, with ages down rows and M/F/Total across columns
+  #     4 xsumratesact_2019,
+  #     5 xsumratesact_2020,
+  #     6 xsumratesact_excess,
+  #     7 xsumratespred_2019,
+  #     8 xsumratespred_2020,
+  #     9 xsumratespred_excess
+
+
+  # Also summary tables for rates
+  xsumratesact_2019 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumratesact_2020 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumratesact_excess <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumratespred_2019 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumratespred_2020 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumratespred_excess <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  # Tables for population (but don't need to name rows & cols)
+  xsumpop_2019 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  xsumpop_2020 <- as.data.frame(matrix(0,nrow=6,ncol=3))
+  # Name rows & cols for summary tables
+  colnames(xsumratesact_2019) <- c("Male","Female","Total")
+  rownames(xsumratesact_2019) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumratesact_2020) <- c("Male","Female","Total")
+  rownames(xsumratesact_2020) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumratesact_excess) <- c("Male","Female","Total")
+  rownames(xsumratesact_excess) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumratespred_2019) <- c("Male","Female","Total")
+  rownames(xsumratespred_2019) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumratespred_2020) <- c("Male","Female","Total")
+  rownames(xsumratespred_2020) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumratespred_excess) <- c("Male","Female","Total")
+  rownames(xsumratespred_excess) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumpop_2019) <- c("Male","Female","Total")
+  rownames(xsumpop_2019) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+  colnames(xsumpop_2020) <- c("Male","Female","Total")
+  rownames(xsumpop_2020) <- c("0-14yr","15-54yr","55-64yr","65-74yr","75+yr","Total")
+
+  # First generate counts (the argument "re.form=NA" forces no random effects in the predicted)
+  # Then calculate the predicted
+  xtestdata$countpred <-exp(predict(REmodel,newdata=xtestdata)) 
+  xtestdata$rate <- xtestdata$count / xtestdata$pop
+  xtestdata$ratepred <- xtestdata$countpred / xtestdata$pop
+
+#  xtestdata <- xtestdata[,c("CLASSE_DI_ETA","count","pop","sex","COVID2020","predrate")]
+
+  # Select and filter the years 2019 and 2020 
+  xfilter <- xtestdata %>%
+      filter(year==2019 | year==2020) %>%
+#      filter(year==xyear) %>%
+      group_by(NOME_COMUNE,PROV,NOME_PROVINCIA,sex,year) %>% 
+      dplyr::select(c(NOME_COMUNE,PROV,NOME_PROVINCIA,CLASSE_DI_ETA,year,sex,count,pop,countpred,rate,ratepred))
+  xfilter$timevar <- paste(xfilter$sex,xfilter$CLASSE_DI_ETA)
+
+  # Need to convert to data frame!!!
+  xpred_wide <- reshape(as.data.frame(xfilter), 
+    timevar = "timevar", 
+  #  timevar = c("year","sex","CLASSE_DI_ETA"),
+    idvar = c("NOME_COMUNE","PROV","NOME_PROVINCIA","year"),
+    v.names = c("count","pop","countpred","rate","ratepred"),
+    drop = c("CLASSE_DI_ETA","sex"),
+    direction = "wide")
+
+  ## --- Sum M + F for population, actual, and predicted counts
+  # Population
+  xpred_wide$`pop.0-14 anni` = xpred_wide$`pop.F 0-14 anni`+xpred_wide$`pop.M 0-14 anni`
+  xpred_wide$`pop.15-54 anni` = xpred_wide$`pop.F 15-54 anni`+xpred_wide$`pop.M 15-54 anni`
+  xpred_wide$`pop.55-64 anni` = xpred_wide$`pop.F 55-64 anni`+xpred_wide$`pop.M 55-64 anni`
+  xpred_wide$`pop.65-74 anni` = xpred_wide$`pop.F 65-74 anni`+xpred_wide$`pop.M 65-74 anni`
+  xpred_wide$`pop.75 anni e piu` = xpred_wide$`pop.F 75 anni e piu`+xpred_wide$`pop.M 75 anni e piu`
+  xpred_wide$pop_total = xpred_wide$`pop.0-14 anni` + xpred_wide$`pop.15-54 anni` + xpred_wide$`pop.55-64 anni` + xpred_wide$`pop.65-74 anni`   + xpred_wide$`pop.75 anni e piu`
+
+  # Calculate rates for M+F and overall
+  # First sum up Counts by age and sex
+  xpred_wide$`count.0-14 anni` = xpred_wide$`count.F 0-14 anni`+xpred_wide$`count.M 0-14 anni`
+  xpred_wide$`count.15-54 anni` = xpred_wide$`count.F 15-54 anni`+xpred_wide$`count.M 15-54 anni`
+  xpred_wide$`count.55-64 anni` = xpred_wide$`count.F 55-64 anni`+xpred_wide$`count.M 55-64 anni`
+  xpred_wide$`count.65-74 anni` = xpred_wide$`count.F 65-74 anni`+xpred_wide$`count.M 65-74 anni`
+  xpred_wide$`count.75 anni e piu` = xpred_wide$`count.F 75 anni e piu`+xpred_wide$`count.M 75 anni e piu`
+  xpred_wide$count_total = xpred_wide$`count.0-14 anni` + xpred_wide$`count.15-54 anni` + xpred_wide$`count.55-64 anni` + xpred_wide$`count.65-74 anni`    + xpred_wide$`count.75 anni e piu`
+  # Counts predicted
+  xpred_wide$`countpred.0-14 anni` = xpred_wide$`countpred.F 0-14 anni`+xpred_wide$`countpred.M 0-14 anni`
+  xpred_wide$`countpred.15-54 anni` = xpred_wide$`countpred.F 15-54 anni`+xpred_wide$`countpred.M 15-54 anni`
+  xpred_wide$`countpred.55-64 anni` = xpred_wide$`countpred.F 55-64 anni`+xpred_wide$`countpred.M 55-64 anni`
+  xpred_wide$`countpred.65-74 anni` = xpred_wide$`countpred.F 65-74 anni`+xpred_wide$`countpred.M 65-74 anni`
+  xpred_wide$`countpred.75 anni e piu` = xpred_wide$`countpred.F 75 anni e piu`+xpred_wide$`countpred.M 75 anni e piu`
+  xpred_wide$countpred_total = xpred_wide$`countpred.0-14 anni` + xpred_wide$`countpred.15-54 anni` + xpred_wide$`countpred.55-64 anni` + xpred_wide$`countpred.65-74 anni` + xpred_wide$`countpred.75 anni e piu`
+
+  ## --- Summary Tables
+  x2020 <- xpred_wide[which(xpred_wide$year==2020),]
+  x2019 <- xpred_wide[which(xpred_wide$year==2019),]
+  # Sum over rows for each age group. The M+F are already down
+  # Summary population, 
+  xsumpop_2019["0-14yr",] <- colSums(x2019[,c("pop.M 0-14 anni","pop.F 0-14 anni","pop.0-14 anni")])
+  xsumpop_2019["15-54yr",] <- colSums(x2019[,c("pop.M 15-54 anni","pop.F 15-54 anni","pop.15-54 anni")])
+  xsumpop_2019["55-64yr",] <- colSums(x2019[,c("pop.M 55-64 anni","pop.F 55-64 anni","pop.55-64 anni")])
+  xsumpop_2019["65-74yr",] <- colSums(x2019[,c("pop.M 65-74 anni","pop.F 65-74 anni","pop.65-74 anni")])
+  xsumpop_2019["75+yr",] <- colSums(x2019[,c("pop.M 75 anni e piu","pop.F 75 anni e piu","pop.75 anni e piu")])
+  xsumpop_2020["0-14yr",] <- colSums(x2020[,c("pop.M 0-14 anni","pop.F 0-14 anni","pop.0-14 anni")])
+  xsumpop_2020["15-54yr",] <- colSums(x2020[,c("pop.M 15-54 anni","pop.F 15-54 anni","pop.15-54 anni")])
+  xsumpop_2020["55-64yr",] <- colSums(x2020[,c("pop.M 55-64 anni","pop.F 55-64 anni","pop.55-64 anni")])
+  xsumpop_2020["65-74yr",] <- colSums(x2020[,c("pop.M 65-74 anni","pop.F 65-74 anni","pop.65-74 anni")])
+  xsumpop_2020["75+yr",] <- colSums(x2020[,c("pop.M 75 anni e piu","pop.F 75 anni e piu","pop.75 anni e piu")])
+  xsumpop_2019["Total",] <- colSums(xsumpop_2019)
+  xsumpop_2020["Total",] <- colSums(xsumpop_2020)
+  # For actual counts
+  xsumratesact_2019["0-14yr",] <- colSums(x2019[,c("count.M 0-14 anni","count.F 0-14 anni","count.0-14 anni")])
+  xsumratesact_2019["15-54yr",] <- colSums(x2019[,c("count.M 15-54 anni","count.F 15-54 anni","count.15-54 anni")])
+  xsumratesact_2019["55-64yr",] <- colSums(x2019[,c("count.M 55-64 anni","count.F 55-64 anni","count.55-64 anni")])
+  xsumratesact_2019["65-74yr",] <- colSums(x2019[,c("count.M 65-74 anni","count.F 65-74 anni","count.65-74 anni")])
+  xsumratesact_2019["75+yr",] <- colSums(x2019[,c("count.M 75 anni e piu","count.F 75 anni e piu","count.75 anni e piu")])
+  xsumratesact_2020["0-14yr",] <- colSums(x2020[,c("count.M 0-14 anni","count.F 0-14 anni","count.0-14 anni")])
+  xsumratesact_2020["15-54yr",] <- colSums(x2020[,c("count.M 15-54 anni","count.F 15-54 anni","count.15-54 anni")])
+  xsumratesact_2020["55-64yr",] <- colSums(x2020[,c("count.M 55-64 anni","count.F 55-64 anni","count.55-64 anni")])
+  xsumratesact_2020["65-74yr",] <- colSums(x2020[,c("count.M 65-74 anni","count.F 65-74 anni","count.65-74 anni")])
+  xsumratesact_2020["75+yr",] <- colSums(x2020[,c("count.M 75 anni e piu","count.F 75 anni e piu","count.75 anni e piu")])
+  xsumratesact_excess <- xsumratesact_2020 - xsumratesact_2019
+  xsumratesact_2019["Total",] <- colSums(xsumratesact_2019)
+  xsumratesact_2020["Total",] <- colSums(xsumratesact_2020)
+  xsumratesact_excess["Total",] <- colSums(xsumratesact_excess)
+  # Create summary tables here
+  xsumratesact_2019 <- xsumratesact_2019 / xsumpop_2019
+  xsumratesact_2020 <- xsumratesact_2020 / xsumpop_2020
+  xsumratesact_excess <- xsumratesact_excess / xsumpop_2020
+  # For predicted counts
+  xsumratespred_2019["0-14yr",] <- colSums(x2019[,c("countpred.M 0-14 anni","countpred.F 0-14 anni","countpred.0-14 anni")])
+  xsumratespred_2019["15-54yr",] <- colSums(x2019[,c("countpred.M 15-54 anni","countpred.F 15-54 anni","countpred.15-54 anni")])
+  xsumratespred_2019["55-64yr",] <- colSums(x2019[,c("countpred.M 55-64 anni","countpred.F 55-64 anni","countpred.55-64 anni")])
+  xsumratespred_2019["65-74yr",] <- colSums(x2019[,c("countpred.M 65-74 anni","countpred.F 65-74 anni","countpred.65-74 anni")])
+  xsumratespred_2019["75+yr",] <- colSums(x2019[,c("countpred.M 75 anni e piu","countpred.F 75 anni e piu","countpred.75 anni e piu")])
+  xsumratespred_2020["0-14yr",] <- colSums(x2020[,c("countpred.M 0-14 anni","countpred.F 0-14 anni","countpred.0-14 anni")])
+  xsumratespred_2020["15-54yr",] <- colSums(x2020[,c("countpred.M 15-54 anni","countpred.F 15-54 anni","countpred.15-54 anni")])
+  xsumratespred_2020["55-64yr",] <- colSums(x2020[,c("countpred.M 55-64 anni","countpred.F 55-64 anni","countpred.55-64 anni")])
+  xsumratespred_2020["65-74yr",] <- colSums(x2020[,c("countpred.M 65-74 anni","countpred.F 65-74 anni","countpred.65-74 anni")])
+  xsumratespred_2020["75+yr",] <- colSums(x2020[,c("countpred.M 75 anni e piu","countpred.F 75 anni e piu","countpred.75 anni e piu")])
+  xsumratespred_excess <- xsumratespred_2020 - xsumratespred_2019
+  xsumratespred_2019["Total",] <- colSums(xsumratespred_2019)
+  xsumratespred_2020["Total",] <- colSums(xsumratespred_2020)
+  xsumratespred_excess["Total",] <- colSums(xsumratespred_excess)
+  # Create summary tables here
+  xsumratespred_2019 <- xsumratespred_2019 / xsumpop_2019
+  xsumratespred_2020 <- xsumratespred_2020 / xsumpop_2020
+  xsumratespred_excess <- xsumratespred_excess / xsumpop_2020
+
+  
+  ## ---  Counts to Rates for town-by-town detail
+  # Now convert Counts to Rates for the town-by-town detail
+  xpred_wide$`rate.0-14 anni` = xpred_wide$`count.0-14 anni` / xpred_wide$`pop.0-14 anni`
+  xpred_wide$`rate.15-54 anni` = xpred_wide$`count.15-54 anni` / xpred_wide$`pop.15-54 anni`
+  xpred_wide$`rate.55-64 anni` = xpred_wide$`count.55-64 anni` / xpred_wide$`pop.55-64 anni`
+  xpred_wide$`rate.65-74 anni` = xpred_wide$`count.65-74 anni` / xpred_wide$`pop.65-74 anni`
+  xpred_wide$`rate.75 anni e piu` = xpred_wide$`count.75 anni e piu` / xpred_wide$`pop.75 anni e piu`
+  xpred_wide$rate_total = xpred_wide$count_total / xpred_wide$pop_total
+  # Rates predicted  
+  # Counts to Rates
+  xpred_wide$`ratepred.0-14 anni` = xpred_wide$`countpred.0-14 anni` / xpred_wide$`pop.0-14 anni`
+  xpred_wide$`ratepred.15-54 anni` = xpred_wide$`countpred.15-54 anni` / xpred_wide$`pop.15-54 anni`
+  xpred_wide$`ratepred.55-64 anni` = xpred_wide$`countpred.55-64 anni` / xpred_wide$`pop.55-64 anni`
+  xpred_wide$`ratepred.65-74 anni` = xpred_wide$`countpred.65-74 anni` / xpred_wide$`pop.65-74 anni`
+  xpred_wide$`ratepred.75 anni e piu` = xpred_wide$`countpred.75 anni e piu` / xpred_wide$`pop.75 anni e piu`
+  xpred_wide$ratepred_total = xpred_wide$countpred_total / xpred_wide$pop_total
+
+  # Calculate excess counts
+  xpred_wide_excess <- xpred_wide[which(xpred_wide$year==2020),]
+  xpred_wide_2020 <- xpred_wide_excess
+  xpred_wide_2019 <- xpred_wide[which(xpred_wide$year==2019),]
+  x1 <- dim(xpred_wide_excess)[2]
+  xpred_wide_excess[,4:x1] <- xpred_wide_2020[,4:x1] - xpred_wide_2019[,4:x1]
+
+  # Rates for excess
+  xpred_wide_excess$`rate.0-14 anni` = xpred_wide_excess$`count.0-14 anni` / xpred_wide_2020$`pop.0-14 anni`
+  xpred_wide_excess$`rate.15-54 anni` = xpred_wide_excess$`count.15-54 anni` / xpred_wide_2020$`pop.15-54 anni`
+  xpred_wide_excess$`rate.55-64 anni` = xpred_wide_excess$`count.55-64 anni` / xpred_wide_2020$`pop.55-64 anni`
+  xpred_wide_excess$`rate.65-74 anni` = xpred_wide_excess$`count.65-74 anni` / xpred_wide_2020$`pop.65-74 anni`
+  xpred_wide_excess$`rate.75 anni e piu` = xpred_wide_excess$`count.75 anni e piu` / xpred_wide_2020$`pop.75 anni e piu`
+  xpred_wide_excess$rate_total = xpred_wide_excess$count_total / xpred_wide_2020$pop_total
+  # Rates predicted  
+  # Rates
+  xpred_wide_excess$`ratepred.0-14 anni` = xpred_wide_excess$`countpred.0-14 anni` / xpred_wide_2020$`pop.0-14 anni`
+  xpred_wide_excess$`ratepred.15-54 anni` = xpred_wide_excess$`countpred.15-54 anni` / xpred_wide_2020$`pop.15-54 anni`
+  xpred_wide_excess$`ratepred.55-64 anni` = xpred_wide_excess$`countpred.55-64 anni` / xpred_wide_2020$`pop.55-64 anni`
+  xpred_wide_excess$`ratepred.65-74 anni` = xpred_wide_excess$`countpred.65-74 anni` / xpred_wide_2020$`pop.65-74 anni`
+  xpred_wide_excess$`ratepred.75 anni e piu` = xpred_wide_excess$`countpred.75 anni e piu` / xpred_wide_2020$`pop.75 anni e piu`
+  xpred_wide_excess$ratepred_total = xpred_wide_excess$countpred_total / xpred_wide_2020$pop_total
+
+  # the "as.data.frame" changes the names (strips out the blanks and replaces with ".")
+  xpred_wide_excess <- as.data.frame(list(xpred_wide_excess))
+  xpred_wide_2020 <- as.data.frame(list(xpred_wide_2020))
+  xpred_wide_2019 <- as.data.frame(list(xpred_wide_2019))
+  xreturn <- list(xpred_wide_2019,xpred_wide_2020,xpred_wide_excess,xsumratesact_2019,xsumratesact_2020,xsumratesact_excess,xsumratespred_2019,xsumratespred_2020,xsumratespred_excess)
+  
+}
+
+# Create summary table from a "prediction" table
+
+
+```
+
+
+Function to extract FE parameters
+```{r extractFEparms, include=FALSE}
+#model <- poisFE_town2020_age2020
+
+# The argument "name_2020" should be either
+# Arguments:
+# For "by-hand" indicators:
+#  Town FEs:
+#    name_2020: "NOME_COMUNE_2020" name_before: "NOME_COMUNE"
+#  Age FEs:
+#    name_2020: "CLASSE_DI_ETA_sex_2020" name_before: "CLASSE_DI_ETA_sex"
+# For standard R "NOME_COMUNE * COVID2020" indicators:
+#  Town FEs:
+#    name_2020: "COVID2020TRUE:NOME_COMUNE" name_before: "NOME_COMUNE"
+#  Age FEs:
+#    name_2020: "COVID2020TRUE:CLASSE_DI_ETA_sex" name_before: "CLASSE_DI_ETA_sex"
+
+#  - "COVID2020TRUE:NOME_COMUNE" when using the R-standard factors "NOME_COMUNE * COVID2020"
+
+extract_FE <- function(xmodel,name_2020="NOME_COMUNE_2020",name_before="NOME_COMUNE") {
+  # extract the coefficients matrix, convert to data frame, and append the names
+  x1 <- summary(xmodel)$coefficients
+  x1 <- as.data.frame(x1)
+  x1$NOME_COMUNE <- rownames(x1)
+  # Select the town FEs 2020
+  xcoeff <- x1[which(grepl(name_2020,x1$NOME_COMUNE)),]
+  # strip off the "NOME_COMUNE_2020" part
+  x2 <- rownames(xcoeff)
+  x2 <- substring(x2,(nchar(name_2020)+1),nchar(x2))
+  xcoeff$NOME_COMUNE <- x2
+  rownames(xcoeff) <- x2
+  # Get the "before" coefficients
+  x3 <- x1[which(grepl(name_before,x1$NOME_COMUNE)),]
+  x2 <- rownames(x3)
+  x2 <- substring(x2,(nchar(name_before)+1),nchar(x2))
+  x3$NOME_COMUNE <- x2
+  rownames(x3) <- x2
+  xcoeff <- left_join(xcoeff,x3,by="NOME_COMUNE",suffix=c(".2020",".before"))
+  return(xcoeff)
+}
+
+```
+
