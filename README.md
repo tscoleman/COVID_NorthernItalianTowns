@@ -45,6 +45,7 @@ The code is in a very preliminary state.
 * _ItalyTown_master.Rmd_ is the master, to be run in RStudio, and will call the others (by converting them to .r on-the-fly and then executing them via a "source" command)
 * _ItalyTown_functions.Rmd_ contains functions used
 * _ItalyTown_readdata.Rmd_ code for reading and transforming data
+* _ItalyTown_bootstrap.Rmd_ runs the bootstrapping for the Randm Effects (RE) model. MUST RUN _ItalyTown_master.Rmd_ BEFORE
 
 btw, if you want to extract just the R code, run
 - library (knitr)
