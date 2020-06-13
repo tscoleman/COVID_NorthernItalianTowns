@@ -450,3 +450,98 @@ extract_FE <- function(xmodel,name_2020="NOME_COMUNE_2020",name_before="NOME_COM
 
 ```
 
+
+
+For "boot" (for non-paremetric bootstrop), need a function that 
+
+* Takes in fitted RE (or FE) model and data and "indices"
+* discards towns that are indexed by "indices"
+* re-runs Poisson model
+* creates vector of parameters and excess mortality
+
+```{r, include=FALSE}
+
+
+boot_summary <- function(data,indices,xformula,realdata,xtestdata,nsigma=2.5,xdisplay2019pop,xdisplay2020pop,
+                         xfamily="poisson",xoptimizer="bobyqa",xnames=NULL) {
+  # This take in
+  #   - data: list of towns, which will be selected for bootstrapping
+  #   - indices: Takes in fitted RE (or FE) model and data and "indices"
+  #   - REmodel: fitted RE model which will be re-run, and then used to generate predictions
+  #   - xtestdata: the data for predictions: 2019 and 2020 categories and population (16 rows)
+  #   - nsigma: the number of sigmas to go out in the RE distribution (2.5 ~ 99th percentile)
+  #   - xdisplay2019pop & xdisplay2020pop: 2019 & 2020 population data, and template for summary matrixes
+  # The function then:
+  #   - strips out the required indices from the real data
+  #   - re-runs the RE model
+  #   - creates vector of parameters and predictions
+
+  # predictions for the excess mortality
+  #   rows: 0-14, 15-64, 65-74, 75+. Total
+  #   cols: M, F, M+F (median of RE) M, F, M+F for nsigma ("99th percentile")
+  # The return is a numerica vector
+
+# ----- discard appropriate indices and re-run -----  
+
+  # Boy this is cumbersome but I can't figure out an easy way to test "count_long1_subset$NOME_COMUNE" against each of a list
+  # of names and then combine them. 
+  x7 <- realdata$NOME_COMUNE == data$NOME_COMUNE[indices[1]]
+  x1 <- length(indices)
+  if (x1 > 1) {
+    for (i in 2:x1) {
+      x7 <- x7 | realdata$NOME_COMUNE == data$NOME_COMUNE[indices[i]]
+    }
+  }
+  # Select the rows to use (excluding the selected towns)
+  xdatarun <- realdata[x7,]
+  
+  xREmodel <- lme4::glmer(formula=xformula,data=xdatarun,family=xfamily,glmerControl(optimizer = xoptimizer, optCtrl = list(maxfun = 100000)))
+
+  # ----- use the re-fitted model to generate predictions -----  
+
+  
+  # Generate counts (the argument "re.form=NA" forces no random effects in the predicted)
+  # Then calculate the predicted
+  xtestdata$count <-exp(predict(xREmodel,newdata=xtestdata,re.form=NA)) 
+  # Extract the standard deviation estimate for the RE 2020 x town
+  # then bump up the predicted mortality by 2sigma, to get the 2sigma percentile 
+  xVarCorr <- as.data.frame(VarCorr(xREmodel))
+  xsdcor <- xVarCorr[1:2,"sdcor"]
+#  xtestdata[17:24,"count"] <- xtestdata[17:24,"count"] * exp(nsigma*xsdcor)
+#  xtestdata[17:24,"predrate"] <- xtestdata[17:24,"predrate"] * exp(nsigma*x2)
+  
+
+
+  # 2019 counts
+  xdisplay2019counts <- xdisplay2019pop
+  xdisplay2019counts[1:5,1] <- xtestdata[1:5,"count"]
+  xdisplay2019counts[1:5,2] <- xtestdata[6:10,"count"]
+  xdisplay2019counts[6,] <- colSums(xdisplay2019counts[1:5,])
+  xdisplay2019counts[,3] <- rowSums(xdisplay2019counts[,1:2])
+      # Duplicate base (2019) for "2sigma percentile"
+  xdisplay2019counts[,4:6] <- xdisplay2019counts[,1:3]
+  # 2020 counts - mid and 2sigma percentile of the RE 
+  xdisplay2020counts <- xdisplay2020pop
+  xdisplay2020counts[1:5,1] <- xtestdata[11:15,"count"]
+  xdisplay2020counts[1:5,2] <- xtestdata[16:20,"count"]
+  # Bump up the counts for the number of sigmas
+  xdisplay2020counts[1:5,4:5] <- xdisplay2020counts[1:5,1:2] * exp(nsigma*xsdcor[2])
+  xdisplay2020counts[6,] <- colSums(xdisplay2020counts[1:5,])
+  xdisplay2020counts[,3] <- rowSums(xdisplay2020counts[,1:2])
+  xdisplay2020counts[,6] <- rowSums(xdisplay2020counts[,4:5])
+  # Calculate the mortality rates
+  xdisplay2020rates <- xdisplay2020counts / xdisplay2020pop
+  xdisplay2019rates <- xdisplay2019counts / xdisplay2019pop
+  xdisplayexcess <- (xdisplay2020rates - xdisplay2019rates) 
+  xdisplayexcess <- as.vector(xdisplayexcess)
+  x1 <- summary(xREmodel)$coefficients
+  xdisplayexcess <- c(xVarCorr[1:2,"sdcor"],x1[,1],xdisplayexcess)
+  names(xdisplayexcess) <- xnames
+  xdisplayexcess
+  #xREmodel
+
+  
+}
+
+```
+

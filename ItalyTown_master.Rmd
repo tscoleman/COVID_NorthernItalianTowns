@@ -50,7 +50,7 @@ library("lme4")           ## For random effects Poisson & Negative Binomial
 library("dplyr")          ## load For doing data manipulation, such as group_by and sum. The "select" function gets 
                           # masked so call by dplyr::select
 require("openxlsx")
-
+#install.packages("attempt")
 
 options(max.print = 300)
 options(max.print = 100)
@@ -272,10 +272,14 @@ testFEsummary[6:7,"p-value"] <- pchisq(q=testFEsummary[6:7,"LRtest"],df=testFEsu
 # To write a table to Excel
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-# Summary test statistics table
-writeData(wb,	sheet="FEresults",	x=testFEsummary,	startRow=3,startCol=9)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Summary test statistics table
+  writeData(wb,	sheet="FEresults",	x=testFEsummary,	startRow=3,startCol=9)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(testFEsummary,file="results/testFEsummary.csv",sep=",")
+
 
 
 testFEsummary
@@ -385,12 +389,17 @@ summary(poisRE_town2020_age2020)
 # To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$coefficients,	startRow=3,startCol=3)
-writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$varcor,	startRow=27,startCol=1)
-writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$devcomp$dims[1],	startRow=31,startCol=3)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
 
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$coefficients,	startRow=3,startCol=3)
+  writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$varcor,	startRow=27,startCol=1)
+  writeData(wb,	sheet="REresults",	x=summary(poisRE_town2020_age2020)$devcomp$dims[1],	startRow=31,startCol=3)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(summary(poisRE_town2020_age2020)$coefficients,file="results/REcoefficients.csv",sep=",")
+write.table(summary(poisRE_town2020_age2020)$varcor,file="results/REvarcor.csv",sep=",")
+write.table(summary(poisRE_town2020_age2020)$devcomp$dims[1],file="results/REnobs.csv",sep=",")
 
 ```
 
@@ -469,10 +478,14 @@ testREsummary[6:7,"p-value"] <- pchisq(q=testREsummary[6:7,"LRtest"],df=testREsu
 # To write a table to Excel
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-# Summary test statistics table
-writeData(wb,	sheet="REresults",	x=testREsummary,	startRow=3,startCol=9)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Summary test statistics table
+  writeData(wb,	sheet="REresults",	x=testREsummary,	startRow=3,startCol=9)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(testREsummary,file="results/testREsummary.csv",sep=",")
 
 
 testREsummary
@@ -521,12 +534,19 @@ xdisplay_RE_town2020_age2020[1]
 # To write a table to Excel
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-# Excess mortality for 2020, mid and 2.5 sigma
-writeData(wb,	sheet="summary",	x=xdisplay_RE_town2020_age2020[1],	startRow=3,startCol=3)
+
+# population as percentage
 x1 <- as.data.frame(xdisplay2020pop) / as.data.frame(xdisplay2020pop)[6,6]
-writeData(wb,	sheet="summary",	x=x1,	startRow=27,startCol=2)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Excess mortality for 2020, mid and 2.5 sigma
+  writeData(wb,	sheet="summary",	x=xdisplay_RE_town2020_age2020[1],	startRow=3,startCol=3)
+  writeData(wb,	sheet="summary",	x=x1,	startRow=27,startCol=2)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(xdisplay_RE_town2020_age2020[1],file="results/excessmortality.csv",sep=",")
+write.table(x1,file="results/population.csv",sep=",")
 
 
 ```
@@ -568,10 +588,14 @@ xsumtable1["ResidDeviance",c("RE_LLR_value","RE_LLR_df","RE_LLR_prob")] <- x1[c(
 # To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-# Summary for regressions
-writeData(wb,	sheet="summary",	x=xsumtable1,	startRow=11,startCol=2)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Summary for regressions
+  writeData(wb,	sheet="summary",	x=xsumtable1,	startRow=11,startCol=2)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(xsumtable1,file="results/summaryLRtest.csv",sep=",")
 
 
 ```
@@ -645,10 +669,13 @@ x7
 # To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-writeData(wb,	sheet="summary",	x=x7,	startRow=35,startCol=2)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
 
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  writeData(wb,	sheet="summary",	x=x7,	startRow=35,startCol=2)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(x7,file="results/summaryactual.csv",sep=",")
 
 
 ```
@@ -718,9 +745,13 @@ x5 <- dim(x4)
 # To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-writeData(wb,	sheet="summary",	x=x4[(x5[1]-15):x5[1],],	startRow=44,startCol=1)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  writeData(wb,	sheet="summary",	x=x4[(x5[1]-15):x5[1],],	startRow=44,startCol=1)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(x4[(x5[1]-15):x5[1],],file="results/highesttowns.csv",sep=",")
 
 
 ```
@@ -803,12 +834,17 @@ USexcessmid[6,3] <- sum(x2)
 # To write a table to Excel - uncomment the "wb", "writeData" and "saveWorkbook" commands below
 #install.packages("openxlsx")
 #require("openxlsx")
-wb <- loadWorkbook(file="results1_55.xlsx")
-# Re-weighted age-specific to US population
-writeData(wb,	sheet="summary",	x=USexcess99,	startRow=18,startCol=14)
-# US population weights
-writeData(wb,	sheet="summary",	x=USweights,	startRow=27,startCol=14)
-saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Re-weighted age-specific to US population
+  writeData(wb,	sheet="summary",	x=USexcess99,	startRow=18,startCol=14)
+  # US population weights
+  writeData(wb,	sheet="summary",	x=USweights,	startRow=27,startCol=14)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(USexcess99,"results/USexcess99.csv",sep=",")
+write.table(USweights,"results/USexcess99.csv",sep=",")
+
 
 ```
 

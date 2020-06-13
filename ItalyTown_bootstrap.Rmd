@@ -1,0 +1,190 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+## Introduction
+
+This is the bootstrapping for the estimation of the Italian Town excess mortality. 
+
+This requires that you first run the RStudio notebook *ItalyTown_master.Rmd* 
+
+
+```{r initial_boot}
+library(boot)
+
+if (!(exists("count_long1_subset") & exists("poisRE_town2020_age2020"))) {
+  print("BOOTSTRAPPING WILL NOT RUN. Data (count_long1_subset) and RE model (poisRE_town2020_age2020) both needed. Run the notebook ItalyTown_master.Rmd.")
+}
+```
+
+
+
+
+For "boot" (for non-paremetric bootstrop), need a function that 
+
+* Takes in fitted RE (or FE) model and data and "indices"
+* discards towns that are indexed by "indices"
+* re-runs Poisson model
+* creates vector of parameters and excess mortality
+
+
+Bootstrap non-parametrically on the towns (excluding town-by-town, all data for a town)
+
+BEWARE: This runs for a long time - roughly 2.8hrs for 400 draws (repeats) with 6 cores on a 2.8GHz i7. 
+
+* Set _parallel="multicore"_ for Mac (For Windows I think it is _"snow"_, for no paralell _"no"_)
+* Set ndraws for the number of draws (repeats or simlations). Below is set to 4, just for demonstration purposes, but it should be something like 400 or 600
+* Set ncpus to the number of cpus (if _parallel="multicore"_). I used ncpus <- 6 on a MacBook Pro (with 8 cores max)
+
+
+```{r bootstrap ,include=FALSE,eval=FALSE}
+
+# Set the number of draws (repeats) and the number of CPUs. 
+# For now set for only 4 repeats and 2 cpus, just to demonstrate that it works
+ndraws <- 4
+ncpus <- 2
+
+# Creat the data needed for the function "bootMER_summary" which can only take an argument 
+# of the RE model and so needs to have the other variables defined with the correct names 
+xx1 <- create_REsummaryData(count_long1_subset,popdata2019,popdata2020,nsigma=2.5)
+xdisplay2019pop <- as.matrix(as.data.frame(xx1[2]))
+xdisplay2020pop <- as.matrix(as.data.frame(xx1[3]))
+# This is the names of the predicted excess mortality rates
+xnames <- unlist(xx1[4])
+# Tack on (to the beginning) names of estimated RE and FE variables
+xVarCorr <- as.data.frame(VarCorr(poisRE_town2020_age2020))
+xnames <- c(xVarCorr[1:2,"var1"],rownames(summary(poisRE_town2020_age2020)$coefficients),xnames)
+xtestdata <- as.data.frame(xx1[1])
+
+bootdata_names <- distinct(count_long1_subset,NOME_COMUNE)
+
+
+
+xfamily <- summary(poisRE_town2020_age2020)$family
+x6 <- summary(poisRE_town2020_age2020)$call
+# This seems to get the formula out correctly
+xformula <- as.character(x6[2])
+# I need to extract the "optimizer" to put into glmerControl and this is the only way I can figure out
+# This will create an element x7$control and the 2nd element will be the optimizer as a string
+x7 <- sapply(x6,as.character)
+xoptimizer <- x7$control[2]
+
+
+xt3par <- system.time(poisRE_town2020_age2020_bootnonpar <- boot(data=bootdata_names,statistic=boot_summary,R=ndraws,
+                        parallel="multicore",ncpus = ncpus,xformula = xformula,realdata=count_long1_subset,
+                        xtestdata=xtestdata,nsigma=2.5,xdisplay2019pop=xdisplay2019pop,xdisplay2020pop=xdisplay2020pop,
+                         xfamily="poisson",xoptimizer="bobyqa"))
+
+# 55 age categoreis, 400 sims, 7 cores, 2.8hrs elapsed, 16.3hrs user
+#     user    system   elapsed 
+# 58668.986  2488.177 10089.047 
+
+colnames(poisRE_town2020_age2020_bootnonpar$t) <- xnames
+
+saveRDS(object=poisRE_town2020_age2020_bootnonpar,file="results/poisRE_town2020_age2020_bootnonpar.rds")
+
+
+```
+
+
+Intersperse 95% confidence intervals in table of 99th percentile excess mortality
+```{r createbootsummary}
+bootresults <- "poisRE_town2020_age2020_bootnonpar_20200609.rds"
+poisRE_town2020_age2020_bootnonpar <- readRDS(file=bootresults)
+
+# Display some quantiles
+xbootdata <- as.data.frame(poisRE_town2020_age2020_bootnonpar[2])
+y1 <- c(2:22,36:40)  # For 15-55 This is list for 2020 Town RE, Male 2.5 sigma 15-64, 65-74, 75+, M Total
+y0 <- c(2:22,24:28)  # For 15-55 This is list for 2020 Town RE, Male 2.5 sigma 15-64, 65-74, 75+, M Total
+#sapply(xbootdata[,y0],quantile,probs=c(0.025,0.975))
+#sapply(xbootdata[,y1],quantile,probs=c(0.025,0.975))
+
+# Indexes for excess mortality estimates within bootstrap data object
+y0 <- 19:33    # for 15-64 index nos in the bootstrap data for median excess mortality
+y1 <- 34:48    # For 15-64 index nos in the bootstrap data for 2.5 sigma excess mortality
+y0 <- 23:40    # for 15-55 index nos in the bootstrap data for median excess mortality
+y1 <- 41:58    # For 15-55 index nos in the bootstrap data for 2.5 sigma excess mortality
+
+# Function to interleave CIs with observations
+interleave_summary <- function(xbootdata, xsummarytable,xindexes=34:48) {
+
+# Get the matrix of 99th pcntile excess mortality, then put it in every-other column
+#  xsummarytable <- as.data.frame(xdisplay_RE_town2020_age2020[1])
+  # tack on extra versions of input table - need to interleave the 3 input columns (M, F, M+F) plus an additional 2 cols for ratio M/F
+  xxsummarytable <- cbind(xsummarytable,xsummarytable,xsummarytable[,1:2])
+  xinterleaved <- xxsummarytable
+  # Move the data into "interleaved" spots
+  xinterleaved[,1] <- xxsummarytable[,4]
+  xinterleaved[,3] <- xxsummarytable[,5]
+  xinterleaved[,5] <- xxsummarytable[,6]
+  # Don't calculate ratio for age 0-14 (row 1) because rates are so low
+  xinterleaved[,7] <- xsummarytable[,1] / xsummarytable[,2]
+  xinterleaved[1,7:8] <- 0
+  # Calculate CIs for the appropriate variables 
+  x3 <- 100*sapply(xbootdata[,xindexes],quantile,probs=c(0.025,0.975))
+  # Calculate ratio of male to female. This is "fragile" in the sense of assuming there are 5 age categories
+  # (0-14, 15-64, 65-74, 75+, overall) so the indexes are 2:5 and 7:10 (not doing the youngest age)
+  x5 <- xbootdata[,xindexes[2:6]] / xbootdata[,xindexes[8:12]]
+  x5 <- sapply(x5,quantile,probs=c(0.025,0.975))
+  # Tack the quantiles for ratios on to back end
+  x3 <- cbind(x3,x5)
+  x4 <- list()
+  for (i in 1:(dim(x3)[2])) {
+    x4 <- c(x4,paste(round(x3[1,i],digits=2),"-",round(x3[2,i],digits=2),sep=""))
+  }
+  x4 <- unlist(x4)
+  xinterleaved[,2] <- x4[1:6]
+  xinterleaved[,4] <- x4[7:12]
+  xinterleaved[,6] <- x4[13:18]
+  xinterleaved[2:6,8] <- x4[19:23]
+  # Re-do but round to 3 digits, use this for ages 65-74, 75+, Total
+  for (i in 1:(dim(x3)[2])) {
+    x4 <- c(x4,paste(round(x3[1,i],digits=1),"-",round(x3[2,i],digits=1),sep=""))
+  }
+  x4 <- unlist(x4)
+  xinterleaved[4:6,2] <- x4[4:6]
+  xinterleaved[4:6,4] <- x4[10:12]
+  xinterleaved[4:6,6] <- x4[16:18]
+  xinterleaved[2:6,8] <- x4[19:23]
+  x1 <- colnames(xsummarytable)
+  colnames(xinterleaved) <- c(x1[1],"CI",x1[2],"CI",x1[3],"CI","M/F","CI")
+  xinterleaved
+
+}
+
+xsummary99th <- interleave_summary(as.data.frame(poisRE_town2020_age2020_bootnonpar[2]),as.data.frame(xdisplay_RE_town2020_age2020[1])[,4:6],xindexes=y1)
+xsummarymid <- interleave_summary(as.data.frame(poisRE_town2020_age2020_bootnonpar[2]),as.data.frame(xdisplay_RE_town2020_age2020[1])[,1:3],xindexes=y0)
+
+```
+
+```{r writebootsummary}
+# Write out the summary data with confidence intervals
+
+# To write a table to Excel
+#install.packages("openxlsx")
+#require("openxlsx")
+
+if (file.exists("results1_55.xlsx")) {
+  wb <- loadWorkbook(file="results1_55.xlsx")
+  # Excess mortality for 2020, mid and 2.5 sigma
+  writeData(wb,	sheet="summary",	x=xsummary99th,	startRow=11,startCol=11)
+  writeData(wb,	sheet="summary",	x=xsummarymid,	startRow=11,startCol=21)
+  saveWorkbook(wb=wb,file="results1_55.xlsx",overwrite=TRUE)
+}
+write.table(xsummary99th,file="results/bootsummary99th.csv",sep=",")
+write.table(xsummarymid,file="results/bootsummarymid.csv",sep=",")
+
+
+```
+
+

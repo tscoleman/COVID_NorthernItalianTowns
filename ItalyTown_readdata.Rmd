@@ -45,13 +45,15 @@ Ago found death counts by town published by ISTAT: https://www.istat.it/it/archi
 
 From ISTAT:
 
-* Mortality: 
+* Mortality from ISTAT, extracted first week of June 2020: 
+  + https://www.istat.it/it/archivio/240401 – a cover page titled _Decessi e Cause di Morte: Cosa Produce L’ISTAT_ (Deaths and Causes of Death: What ISTAT Produces)
+  + Detailed mortality data under _Dataset analitico con i decessi giornalieri in ogni singolo comune di residenza_ (Analytical dataset with daily deaths in each single municipality of residence (https://www.istat.it/it/files//2020/03/Dataset-decessi-comunali-giornalieri-e-tracciato-record.zip)
   + Deaths by day from 1-jan -> 30-apr for the years 2015, 2016, 2017, 2018, 2019, and for 1-jan -> 15-apr for 2020
     + Must exclude 16-apr -> 30-apr
   + Deaths by 5-year age group: code in 8th column “CL_ETA”: 0= 0 1=1-4 2=5-9 3=10-14 4=15-19 5=20-24 6=25-29 7=30-34 8=35-39 9=40-44 10=45-49 11=50-54 12=55-59 13=60-64 14=65-69 15=70-74 16=75-79 17=80-84 18=85-89 19=90-94 20=95-99 21=100+
   + Deaths for Male, Female, Total
   + By town
-* Population:
+* Population from ISTAT, extracted first week of June 2020:
   + Source: Web: http://demo.istat.it/pop2019/index3.html
   + Download individual Provinces (Milano, Bergamo, Brescia, Lodi) under region Lombardia, 
   + Change the “2019” to “2018” etc in the URL above
@@ -60,6 +62,7 @@ From ISTAT:
   + by single years 
   + Must sum up to above ages in R. 
   + Only have population for 2019, so use this for 2020 
+
  
 
 ## Reading in and Transforming the Data
